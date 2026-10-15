@@ -205,3 +205,74 @@ test('expiry is enforced and selected scope follows IDs through group edits', as
         404,
     );
 });
+
+test('permanent share deletion removes active, revoked and expired records without deleting nodes', async (t) => {
+    const { store, base, request } = await setup(t);
+    store.import(payload);
+    const active = store.createShare({ name: 'Active', scope: 'all' });
+    const revoked = store.createShare({ name: 'Revoked', scope: 'all' });
+    const expired = store.createShare({ name: 'Expired', scope: 'all' });
+    const retained = store.createShare({ name: 'Retained', scope: 'all' });
+    store.revokeShare(revoked.id);
+    store.transaction((s) => {
+        s.shares.find((item) => item.id === expired.id).expiresAt =
+            '2000-01-01T00:00:00.000Z';
+    });
+    const unauthorized = await request(
+        `/api/isp/shares/${active.id}?mode=permanent`,
+        undefined,
+        'DELETE',
+        false,
+    );
+    assert.equal(unauthorized.status, 401);
+    assert.equal(store.listShares().length, 4);
+    const invalid = await request(
+        `/api/isp/shares/${active.id}?mode=typo`,
+        undefined,
+        'DELETE',
+    );
+    assert.equal(invalid.status, 400);
+    assert.equal(store.resolveShare(active.token).nodes.length, 1);
+    for (const share of [active, revoked, expired]) {
+        const response = await request(
+            `/api/isp/shares/${share.id}?mode=permanent`,
+            undefined,
+            'DELETE',
+        );
+        assert.equal(response.status, 200);
+        assert.deepEqual((await response.json()).data, { deleted: true });
+        for (const file of ['clash.yaml', 'provider.yaml']) {
+            assert.equal(
+                (await fetch(`${base}/s/${share.token}/${file}`)).status,
+                404,
+            );
+        }
+    }
+    const listed = (
+        await (await request('/api/isp/shares', undefined, 'GET')).json()
+    ).data;
+    assert.deepEqual(
+        listed.map((s) => s.id),
+        [retained.id],
+    );
+    const restarted = new IspStore({ file: store.file });
+    assert.deepEqual(
+        restarted.listShares().map((s) => s.id),
+        [retained.id],
+    );
+    assert.equal(restarted.list({}).total, 1);
+    assert.equal(
+        (await fetch(`${base}/s/${retained.token}/clash.yaml`)).status,
+        200,
+    );
+    assert.equal(
+        (
+            await request(
+                `/api/isp/shares/${active.id}?mode=permanent`,
+                undefined,
+                'DELETE',
+            )
+        ).status,
+        404,
+    );
+});

@@ -321,6 +321,11 @@ async function loadShares() {
                 );
                 actions.append(revoke);
             }
+            const remove = element('button', 'quiet danger-text', '删除');
+            remove.addEventListener('click', () =>
+                batchDialog('delete-share', share),
+            );
+            actions.append(remove);
             card.append(actions);
             return card;
         }),
@@ -528,7 +533,8 @@ async function copyLink(id) {
     }
 }
 function batchDialog(action, share) {
-    if (action !== 'revoke' && !state.selected.size) return;
+    if (!['revoke', 'delete-share'].includes(action) && !state.selected.size)
+        return;
     state.batch = { action, ids: [...state.selected], share };
     const labels = {
         enable: '批量启用',
@@ -536,19 +542,26 @@ function batchDialog(action, share) {
         group: '移动分组',
         delete: '删除节点',
         revoke: '撤销订阅',
+        'delete-share': '删除订阅',
     };
     $('batch-title').textContent = labels[action];
     $('batch-group-label').hidden = action !== 'group';
     $('batch-group').value = '';
     $('batch-error').textContent = '';
     $('batch-description').textContent =
-        action === 'revoke'
+        action === 'delete-share'
+            ? `将永久删除“${share.name}”的分享记录，对应链接立即失效。ISP 节点保留。此操作无法撤销。`
+            : action === 'revoke'
             ? `撤销“${share.name}”后，此链接将无法继续下载。已下载的配置不受影响。`
             : action === 'delete'
             ? `将永久删除所选的 ${state.selected.size} 个节点。关联订阅将不再包含这些节点。`
             : `将对选中的 ${state.selected.size} 个节点执行“${labels[action]}”。`;
     $('batch-confirm').textContent = labels[action];
-    $('batch-confirm').className = ['delete', 'revoke'].includes(action)
+    $('batch-confirm').className = [
+        'delete',
+        'revoke',
+        'delete-share',
+    ].includes(action)
         ? 'danger'
         : 'primary';
     open('batch-dialog');
@@ -753,8 +766,13 @@ $('batch-form').addEventListener('submit', (event) => {
     run(
         async () => {
             const { action, ids, share } = state.batch;
-            if (action === 'revoke') {
-                await api(`shares/${share.id}`, undefined, 'DELETE');
+            if (['revoke', 'delete-share'].includes(action)) {
+                const suffix =
+                    action === 'delete-share' ? '?mode=permanent' : '';
+                await api(`shares/${share.id}${suffix}`, undefined, 'DELETE');
+                $('clash-link').value = '';
+                $('provider-link').value = '';
+                state.batch = null;
                 await loadShares();
             } else {
                 await api(
@@ -765,7 +783,13 @@ $('batch-form').addEventListener('submit', (event) => {
                 await loadNodes();
             }
             close('batch-dialog');
-            toast(action === 'revoke' ? '订阅已撤销' : '批量操作已完成');
+            toast(
+                action === 'delete-share'
+                    ? '订阅已删除'
+                    : action === 'revoke'
+                    ? '订阅已撤销'
+                    : '批量操作已完成',
+            );
         },
         'batch-error',
         event.submitter,

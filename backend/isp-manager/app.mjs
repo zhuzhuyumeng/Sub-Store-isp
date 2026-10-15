@@ -87,9 +87,17 @@ export function createApp({ store, adminToken, publicBaseUrl = '' }) {
     app.post('/api/isp/shares', (req, res) =>
         ok(res, shareView(store.createShare(req.body)), 201),
     );
-    app.delete('/api/isp/shares/:id', (req, res) =>
-        ok(res, store.revokeShare(req.params.id)),
-    );
+    app.delete('/api/isp/shares/:id', (req, res) => {
+        const mode = req.query.mode ?? 'revoke';
+        if (!['revoke', 'permanent'].includes(mode))
+            throw new IspError('不支持的分享删除方式');
+        ok(
+            res,
+            mode === 'permanent'
+                ? store.deleteShare(req.params.id)
+                : store.revokeShare(req.params.id),
+        );
+    });
     app.get('/s/:token/:file', (req, res) => {
         if (!['clash.yaml', 'provider.yaml'].includes(req.params.file))
             throw new IspError('订阅不存在', 404);

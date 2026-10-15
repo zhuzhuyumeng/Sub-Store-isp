@@ -349,6 +349,14 @@ export class IspStore {
             return { revoked: true };
         });
     }
+    deleteShare(id) {
+        if (!this.state.shares.some((s) => s.id === id))
+            throw new IspError('分享不存在', 404);
+        return this.transaction((state) => {
+            state.shares = state.shares.filter((s) => s.id !== id);
+            return { deleted: true };
+        });
+    }
     resolveShare(token) {
         if (typeof token !== 'string' || !/^[a-f0-9]{64}$/.test(token))
             throw new IspError('订阅不存在或已失效', 404);
