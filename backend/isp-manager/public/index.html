@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="color-scheme" content="light" />
+        <title>Sub-Store · ISP 管理</title>
+        <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+        <link rel="stylesheet" href="./style.css" />
+        <script src="./app.js" defer></script>
+    </head>
+    <body>
+        <header class="topbar">
+            <div class="top-actions">
+                <button
+                    class="icon-button"
+                    id="refresh"
+                    aria-label="刷新列表"
+                    title="刷新列表"
+                >
+                    ↻</button
+                ><button
+                    class="icon-button"
+                    id="top-import"
+                    aria-label="批量导入"
+                    title="批量导入"
+                >
+                    ＋
+                </button>
+            </div>
+            <h1 id="page-title">ISP 管理</h1>
+            <div class="top-actions right">
+                <span id="connection" class="connection">未连接</span
+                ><button id="logout" class="quiet small" hidden>退出</button>
+            </div>
+        </header>
+        <main id="workspace" hidden>
+            <section class="intro">
+                <img src="./icon.svg" width="52" height="52" alt="" />
+                <div>
+                    <p class="eyebrow">SUB-STORE <span>/ ISP</span></p>
+                    <h2>你的 ISP，集中管理。</h2>
+                    <p>批量导入、分组维护，一条链接持续更新。</p>
+                </div>
+            </section>
+            <section id="nodes-panel" aria-label="ISP 节点">
+                <div class="section-heading">
+                    <div>
+                        <h2>
+                            ISP 节点
+                            <span id="node-count" class="count">0</span>
+                        </h2>
+                        <p id="stats" class="muted">准备导入第一批代理</p>
+                    </div>
+                    <button id="import-open" class="primary">
+                        ＋ 批量导入
+                    </button>
+                </div>
+                <div class="surface">
+                    <div class="filters">
+                        <label class="search-label"
+                            ><span class="sr-only">搜索节点</span
+                            ><input
+                                id="search"
+                                type="search"
+                                placeholder="搜索名称、主机、账号或分组"
+                                autocomplete="off" /></label
+                        ><label
+                            ><span class="sr-only">筛选分组</span
+                            ><select id="group-filter">
+                                <option value="*">全部分组</option>
+                            </select></label
+                        ><label
+                            ><span class="sr-only">筛选状态</span
+                            ><select id="status-filter">
+                                <option value="">全部状态</option>
+                                <option value="true">已启用</option>
+                                <option value="false">已停用</option>
+                            </select></label
+                        >
+                    </div>
+                    <div class="bulk-bar" id="bulk-bar" hidden>
+                        <span id="selected-count">已选 0 项</span>
+                        <div>
+                            <button id="bulk-enable">启用</button
+                            ><button id="bulk-disable">停用</button
+                            ><button id="bulk-group">移动分组</button
+                            ><button id="bulk-share">创建订阅</button
+                            ><button id="bulk-delete" class="danger-text">
+                                删除
+                            </button>
+                        </div>
+                    </div>
+                    <div class="table-scroll">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th class="check-cell">
+                                        <input
+                                            id="select-all"
+                                            type="checkbox"
+                                            aria-label="全选本页"
+                                        />
+                                    </th>
+                                    <th>节点 / 地址</th>
+                                    <th>协议</th>
+                                    <th>账号</th>
+                                    <th>分组</th>
+                                    <th>状态</th>
+                                    <th class="align-right">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="nodes-body"></tbody>
+                        </table>
+                    </div>
+                    <div id="empty-nodes" class="empty" hidden>
+                        <span class="empty-symbol">↗</span>
+                        <h3>从第一批 ISP 开始</h3>
+                        <p>粘贴供应商提供的代理列表，选择对应格式即可导入。</p>
+                        <button id="empty-import" class="primary">
+                            批量导入
+                        </button>
+                    </div>
+                    <div id="empty-filter" class="empty" hidden>
+                        <h3>没有匹配的节点</h3>
+                        <p>试试其他关键词，或清除筛选。</p>
+                        <button id="clear-filter">清除筛选</button>
+                    </div>
+                    <footer class="pagination">
+                        <span id="page-summary">0 个节点</span>
+                        <div>
+                            <label
+                                >每页
+                                <select id="page-size">
+                                    <option>50</option>
+                                    <option>100</option>
+                                    <option>200</option>
+                                </select></label
+                            ><button id="previous" aria-label="上一页">‹</button
+                            ><span id="page-number">1 / 1</span
+                            ><button id="next" aria-label="下一页">›</button>
+                        </div>
+                    </footer>
+                </div>
+                <p class="footnote">
+                    只有启用的节点会出现在订阅中。密码默认隐藏，更新密码时可直接填写新值。
+                </p>
+            </section>
+            <section id="shares-panel" aria-label="分享订阅" hidden>
+                <div class="section-heading">
+                    <div>
+                        <h2>
+                            分享订阅
+                            <span id="share-count" class="count">0</span>
+                        </h2>
+                        <p class="muted">
+                            节点更新后，接收方刷新订阅即可生效。
+                        </p>
+                    </div>
+                    <button id="share-open" class="primary">＋ 创建订阅</button>
+                </div>
+                <div id="shares-list" class="shares-list"></div>
+                <div id="empty-shares" class="surface empty" hidden>
+                    <span class="empty-symbol">∞</span>
+                    <h3>将 ISP 分享给使用者</h3>
+                    <p>选择全部节点、一个分组，或在节点列表中批选。</p>
+                    <button id="empty-share" class="primary">创建订阅</button>
+                </div>
+                <p class="footnote">
+                    Clash
+                    链接包含所选节点的连接账号和密码。请仅发给需要使用的人；撤销链接会停止后续下载，已下载的配置仍可使用。
+                </p>
+            </section>
+            <section
+                id="help-panel"
+                class="help surface"
+                aria-label="使用说明"
+                hidden
+            >
+                <h2>从代理列表到 Clash 订阅</h2>
+                <ol>
+                    <li>
+                        <strong>导入 ISP</strong>
+                        <p>
+                            选择供应商提供的格式，再选择实际支持的协议。每行一条代理，支持粘贴或
+                            TXT 文件。
+                        </p>
+                    </li>
+                    <li>
+                        <strong>整理节点</strong>
+                        <p>
+                            可按分组和状态筛选。勾选本页节点后可批量启停、移动分组、删除或创建订阅。
+                        </p>
+                    </li>
+                    <li>
+                        <strong>创建分享订阅</strong>
+                        <p>
+                            全部节点和分组订阅会包含后续新增的匹配节点；所选节点订阅始终跟随所选
+                            ID。默认只输出已启用节点。
+                        </p>
+                    </li>
+                    <li>
+                        <strong>导入 Clash</strong>
+                        <p>
+                            复制“Clash 链接”，在 Clash
+                            客户端的订阅/配置中粘贴。已有自定义配置时可改用
+                            Provider 链接。
+                        </p>
+                    </li>
+                </ol>
+                <h3>支持的导入格式</h3>
+                <pre>
+HOST:PORT:USER:PASS
+HOST:PORT@USER:PASS
+USER:PASS:HOST:PORT
+USER:PASS@HOST:PORT</pre
+                >
+                <p>
+                    IPv6 地址需带方括号，例如
+                    <code>[2001:db8::1]:8080:user:password</code
+                    >。用户名不能包含冒号；密码可以包含冒号和 @，不做 URL
+                    解码。请勿添加协议前缀。
+                </p>
+                <h3>重复导入如何处理</h3>
+                <p>
+                    协议、主机、端口和用户名都相同时，视为同一个账号。默认跳过；选择“更新密码与分组”会保留节点
+                    ID、名称和启停状态。
+                </p>
+                <h3>让其他人访问</h3>
+                <p>
+                    服务需要部署到接收方可访问的地址，建议使用
+                    HTTPS。服务器可通过
+                    <code>ISP_PUBLIC_BASE_URL</code> 指定公开网址。localhost 和
+                    127.0.0.1 链接仅能在本机使用。
+                </p>
+                <p class="muted">
+                    新增 ISP 模块采用 Sub-Store
+                    的页面结构与交互风格。原有订阅数据由原 Sub-Store
+                    服务独立管理。
+                </p>
+            </section>
+        </main>
+        <nav class="bottom-nav" aria-label="主导航">
+            <button data-tab="nodes" class="active" aria-current="page">
+                <span>↗</span>ISP 节点</button
+            ><button data-tab="shares"><span>▦</span>分享订阅</button
+            ><button data-tab="help"><span>ⓘ</span>使用说明</button>
+        </nav>
+        <div id="toast" role="status" aria-live="polite" hidden></div>
+        <dialog
+            id="login-dialog"
+            class="login-dialog"
+            aria-labelledby="login-title"
+        >
+            <form id="login-form">
+                <img src="./icon.svg" width="56" height="56" alt="" />
+                <h2 id="login-title">连接 ISP 管理</h2>
+                <p class="muted">输入服务器管理口令，开始管理你的代理。</p>
+                <label
+                    >管理口令<input
+                        id="admin-token"
+                        type="password"
+                        required
+                        minlength="24"
+                        autocomplete="off"
+                        placeholder="粘贴管理口令"
+                /></label>
+                <p id="login-error" class="error" role="alert"></p>
+                <button class="primary full" type="submit">连接</button>
+                <p class="footnote">
+                    首次启动生成的口令保存在数据目录的 admin-token
+                    文件中。本次连接仅在当前标签页保留。
+                </p>
+            </form>
+        </dialog>
+        <dialog
+            id="import-dialog"
+            class="wide-dialog"
+            aria-labelledby="import-title"
+        >
+            <form id="import-form">
+                <div class="dialog-heading">
+                    <div>
+                        <p class="eyebrow">批量导入</p>
+                        <h2 id="import-title">添加 ISP 节点</h2>
+                    </div>
+                    <button
+                        class="icon-button"
+                        type="button"
+                        data-close="import-dialog"
+                        aria-label="关闭导入"
+                    >
+                        ×
+                    </button>
+                </div>
+                <div class="form-grid">
+                    <label class="span-2"
+                        >导入格式<select id="import-format">
+                            <option>HOST:PORT:USER:PASS</option>
+                            <option>HOST:PORT@USER:PASS</option>
+                            <option>USER:PASS:HOST:PORT</option>
+                            <option>USER:PASS@HOST:PORT</option>
+                        </select></label
+                    ><label
+                        >代理协议<select id="import-protocol">
+                            <option value="http">HTTP</option>
+                            <option value="https">HTTPS</option>
+                            <option value="socks5">SOCKS5</option>
+                        </select></label
+                    >
+                </div>
+                <div class="example">
+                    <span>格式示例</span
+                    ><code id="format-example"
+                        >proxy.example:8080:user:password</code
+                    >
+                </div>
+                <div class="label-row">
+                    <label for="import-content">代理列表</label
+                    ><label class="file-button"
+                        >导入 TXT 文件<input
+                            id="import-file"
+                            type="file"
+                            accept=".txt,text/plain"
+                            class="sr-only"
+                    /></label>
+                </div>
+                <textarea
+                    id="import-content"
+                    class="code-input"
+                    rows="7"
+                    required
+                    spellcheck="false"
+                    placeholder="每行一条代理，最多 50,000 行"
+                ></textarea>
+                <div class="form-grid two">
+                    <label
+                        >导入到分组<input
+                            id="import-group"
+                            maxlength="100"
+                            placeholder="例如：美国住宅 / 供应商 A"
+                            list="group-options" /></label
+                    ><label
+                        >遇到重复账号<select id="import-duplicate">
+                            <option value="skip">跳过重复账号</option>
+                            <option value="update">更新密码与分组</option>
+                        </select></label
+                    >
+                </div>
+                <p class="hint">
+                    格式与协议分别选择。账号密码按原文保留，空行自动忽略。
+                </p>
+                <div id="import-preview" hidden></div>
+                <p id="import-error" class="error" role="alert"></p>
+                <div class="dialog-footer">
+                    <button type="button" data-close="import-dialog">
+                        取消</button
+                    ><button id="preview-import" type="submit">预览校验</button
+                    ><button
+                        id="commit-import"
+                        type="button"
+                        class="primary"
+                        disabled
+                    >
+                        确认导入
+                    </button>
+                </div>
+            </form>
+        </dialog>
+        <dialog id="edit-dialog" aria-labelledby="edit-title">
+            <form id="edit-form">
+                <div class="dialog-heading">
+                    <h2 id="edit-title">编辑 ISP 节点</h2>
+                    <button
+                        class="icon-button"
+                        type="button"
+                        data-close="edit-dialog"
+                        aria-label="关闭编辑"
+                    >
+                        ×
+                    </button>
+                </div>
+                <label
+                    >名称<input id="edit-name" required maxlength="200"
+                /></label>
+                <div class="form-grid two">
+                    <label
+                        >主机<input
+                            id="edit-server"
+                            required
+                            maxlength="253" /></label
+                    ><label
+                        >端口<input
+                            id="edit-port"
+                            required
+                            type="number"
+                            min="1"
+                            max="65535" /></label
+                    ><label
+                        >协议<select id="edit-protocol">
+                            <option value="http">HTTP</option>
+                            <option value="https">HTTPS</option>
+                            <option value="socks5">SOCKS5</option>
+                        </select></label
+                    ><label
+                        >分组<input
+                            id="edit-group"
+                            maxlength="100"
+                            list="group-options"
+                    /></label>
+                </div>
+                <label
+                    >用户名<input
+                        id="edit-username"
+                        required
+                        maxlength="1024"
+                        autocomplete="off" /></label
+                ><label
+                    >新密码<input
+                        id="edit-password"
+                        type="password"
+                        maxlength="4096"
+                        autocomplete="new-password"
+                        placeholder="留空保留现有密码" /></label
+                ><label class="inline-label"
+                    ><input
+                        id="edit-enabled"
+                        type="checkbox"
+                    />启用该节点</label
+                >
+                <p id="edit-error" class="error" role="alert"></p>
+                <div class="dialog-footer">
+                    <button type="button" data-close="edit-dialog">取消</button
+                    ><button type="submit" class="primary">保存</button>
+                </div>
+            </form>
+        </dialog>
+        <dialog id="share-dialog" aria-labelledby="share-title">
+            <form id="share-form">
+                <div class="dialog-heading">
+                    <h2 id="share-title">创建分享订阅</h2>
+                    <button
+                        class="icon-button"
+                        type="button"
+                        data-close="share-dialog"
+                        aria-label="关闭订阅设置"
+                    >
+                        ×
+                    </button>
+                </div>
+                <label
+                    >订阅名称<input
+                        id="share-name"
+                        required
+                        maxlength="200"
+                        placeholder="例如：团队 · 美国 ISP" /></label
+                ><label
+                    >分享范围<select id="share-scope">
+                        <option value="all">全部节点（包含后续新增）</option>
+                        <option value="group">指定分组（随分组更新）</option>
+                        <option value="selected">所选节点</option>
+                    </select></label
+                ><label id="share-group-label" hidden
+                    >选择分组<select id="share-group"></select
+                ></label>
+                <p id="share-selected-info" class="hint" hidden></p>
+                <label
+                    >到期时间（可选）<input
+                        id="share-expiry"
+                        type="datetime-local"
+                /></label>
+                <p class="hint">
+                    接收方只能下载所选范围的启用节点。可随时撤销链接。
+                </p>
+                <p id="share-error" class="error" role="alert"></p>
+                <div class="dialog-footer">
+                    <button type="button" data-close="share-dialog">取消</button
+                    ><button type="submit" class="primary">创建订阅</button>
+                </div>
+            </form>
+        </dialog>
+        <dialog id="batch-dialog" aria-labelledby="batch-title">
+            <form id="batch-form">
+                <div class="dialog-heading">
+                    <h2 id="batch-title">批量操作</h2>
+                    <button
+                        class="icon-button"
+                        type="button"
+                        data-close="batch-dialog"
+                        aria-label="关闭批量操作"
+                    >
+                        ×
+                    </button>
+                </div>
+                <p id="batch-description"></p>
+                <label id="batch-group-label" hidden
+                    >目标分组<input
+                        id="batch-group"
+                        maxlength="100"
+                        list="group-options"
+                        placeholder="留空移至未分组"
+                /></label>
+                <p id="batch-error" class="error" role="alert"></p>
+                <div class="dialog-footer">
+                    <button type="button" data-close="batch-dialog">取消</button
+                    ><button id="batch-confirm" type="submit" class="primary">
+                        确认
+                    </button>
+                </div>
+            </form>
+        </dialog>
+        <dialog id="link-dialog" aria-labelledby="link-title">
+            <div class="dialog-heading">
+                <h2 id="link-title">订阅链接</h2>
+                <button
+                    class="icon-button"
+                    type="button"
+                    data-close="link-dialog"
+                    aria-label="关闭订阅链接"
+                >
+                    ×
+                </button>
+            </div>
+            <label>Clash 完整配置<input id="clash-link" readonly /></label
+            ><button id="copy-clash" class="primary full">
+                复制 Clash 链接</button
+            ><label>Proxy Provider<input id="provider-link" readonly /></label
+            ><button id="copy-provider" class="full">复制 Provider 链接</button>
+            <p id="link-warning" class="hint"></p>
+            <p class="footnote">
+                订阅包含代理账号和密码，请仅分享给需要使用的人。
+            </p>
+        </dialog>
+        <datalist id="group-options"></datalist>
+    </body>
+</html>
