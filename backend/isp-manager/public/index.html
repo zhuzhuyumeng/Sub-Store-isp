@@ -303,11 +303,20 @@ USER:PASS@HOST:PORT</pre
                         </select></label
                     ><label
                         >代理协议<select id="import-protocol">
-                            <option value="http">HTTP</option>
-                            <option value="https">HTTPS</option>
+                            <option value="http">HTTP / HTTPS</option>
                             <option value="socks5">SOCKS5</option>
                         </select></label
                     >
+                </div>
+                <div id="import-tls-options">
+                    <label class="inline-label"
+                        ><input id="import-tls" type="checkbox" />使用 TLS
+                        连接代理服务器</label
+                    >
+                    <p class="hint">
+                        普通 HTTP 代理也能访问 HTTPS 网站；仅当供应商要求 HTTPS
+                        代理连接时开启 TLS。
+                    </p>
                 </div>
                 <div class="example">
                     <span>格式示例</span
@@ -398,8 +407,7 @@ USER:PASS@HOST:PORT</pre
                             max="65535" /></label
                     ><label
                         >协议<select id="edit-protocol">
-                            <option value="http">HTTP</option>
-                            <option value="https">HTTPS</option>
+                            <option value="http">HTTP / HTTPS</option>
                             <option value="socks5">SOCKS5</option>
                         </select></label
                     ><label
@@ -408,6 +416,16 @@ USER:PASS@HOST:PORT</pre
                             maxlength="100"
                             list="group-options"
                     /></label>
+                </div>
+                <div id="edit-tls-options">
+                    <label class="inline-label"
+                        ><input id="edit-tls" type="checkbox" />使用 TLS
+                        连接代理服务器</label
+                    >
+                    <p class="hint">
+                        普通 HTTP 代理也能访问 HTTPS 网站；仅当供应商要求 HTTPS
+                        代理连接时开启 TLS。
+                    </p>
                 </div>
                 <label
                     >用户名<input

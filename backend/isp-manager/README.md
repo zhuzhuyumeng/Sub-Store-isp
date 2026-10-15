@@ -39,7 +39,7 @@ cat isp-manager/.data/admin-token
 | USER:PASS:HOST:PORT | alice:p:a@ss:proxy.example:8080 |
 | USER:PASS@HOST:PORT | alice:p:a@ss@proxy.example:8080 |
 
-- 协议独立选择 HTTP、HTTPS 或 SOCKS5。格式不推断协议；供应商同时支持多协议时按实际用途选择。
+- 协议选项合并为 **HTTP / HTTPS** 和 **SOCKS5**。HTTP / HTTPS 默认使用普通 HTTP 代理连接，也能访问 HTTPS 网站。仅当供应商明确要求通过 TLS 连接代理服务器时，开启“使用 TLS 连接代理服务器”。旧 HTTPS 节点编辑时会自动开启该选项；API 仍使用 http/https/socks5 区分实际连接方式。
 - 每行一条；空行忽略；不加 `http://` 等前缀；不自动解码 `%40` 等文本，凭据按原文保存。
 - IPv6 必须加方括号，如 `[2001:db8::1]:8080:alice:password`。
 - 用户名不能包含 `:`；密码可以包含 `:` 和 `@`。地址在后的格式，从末尾识别 `HOST:PORT`；`USER:PASS@HOST:PORT` 以最后一个 `@` 为地址分隔符。

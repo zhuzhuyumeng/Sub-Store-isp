@@ -191,7 +191,7 @@ function renderNodes() {
             );
             const protocol = element('td');
             protocol.append(
-                element('span', 'tag', node.protocol.toUpperCase()),
+                element('span', 'tag', protocolLabel(node.protocol)),
             );
             const account = element('td', 'account');
             account.append(
@@ -351,16 +351,35 @@ const examples = [
     'user:password:proxy.example:8080',
     'user:password@proxy.example:8080',
 ];
+function protocolFromForm(prefix) {
+    return $(`${prefix}-protocol`).value === 'socks5'
+        ? 'socks5'
+        : $(`${prefix}-tls`).checked
+        ? 'https'
+        : 'http';
+}
+function syncProtocolOptions(prefix) {
+    $(`${prefix}-tls-options`).hidden =
+        $(`${prefix}-protocol`).value !== 'http';
+}
+function protocolLabel(protocol) {
+    return protocol === 'socks5'
+        ? 'SOCKS5'
+        : protocol === 'https'
+        ? 'HTTP / HTTPS · TLS'
+        : 'HTTP / HTTPS';
+}
 function importInput() {
     return {
         format: $('import-format').value,
-        protocol: $('import-protocol').value,
+        protocol: protocolFromForm('import'),
         content: $('import-content').value,
         group: $('import-group').value,
         duplicate: $('import-duplicate').value,
     };
 }
 function invalidatePreview() {
+    syncProtocolOptions('import');
     state.preview = '';
     $('import-preview').hidden = true;
     $('commit-import').disabled = true;
@@ -421,7 +440,7 @@ function renderPreview(data) {
                 item.action,
                 item.server,
                 item.port,
-                item.protocol.toUpperCase(),
+                protocolLabel(item.protocol),
             ])
                 row.append(element('td', '', String(value)));
             body.append(row);
@@ -449,6 +468,9 @@ function editNode(node) {
         'username',
     ])
         $(`edit-${key}`).value = node[key];
+    $('edit-protocol').value = node.protocol === 'socks5' ? 'socks5' : 'http';
+    $('edit-tls').checked = node.protocol === 'https';
+    syncProtocolOptions('edit');
     $('edit-enabled').checked = node.enabled;
     $('edit-password').value = '';
     $('edit-error').textContent = '';
@@ -614,6 +636,9 @@ $('bulk-share').addEventListener('click', () => shareDialog(true));
 for (const id of ['share-open', 'empty-share'])
     $(id).addEventListener('click', () => shareDialog());
 $('share-scope').addEventListener('change', scopeChanged);
+$('edit-protocol').addEventListener('change', () =>
+    syncProtocolOptions('edit'),
+);
 $('import-form').addEventListener('input', invalidatePreview);
 $('import-form').addEventListener('change', invalidatePreview);
 $('import-file').addEventListener('change', () =>
@@ -684,6 +709,7 @@ $('edit-form').addEventListener('submit', (event) => {
                 'username',
             ])
                 data[key] = $(`edit-${key}`).value;
+            data.protocol = protocolFromForm('edit');
             data.port = Number($('edit-port').value);
             data.enabled = $('edit-enabled').checked;
             if ($('edit-password').value !== '')
