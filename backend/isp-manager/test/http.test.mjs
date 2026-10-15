@@ -276,3 +276,71 @@ test('permanent share deletion removes active, revoked and expired records witho
         404,
     );
 });
+
+test('import schedules all changed nodes; protected manual checks and status do not change subscriptions', async (t) => {
+    const { ProbeQueue } = await import('../probe.mjs');
+    let queue;
+    const prober = {
+        enqueue: (ids) => queue.enqueue(ids),
+        summary: () => queue.summary(),
+        decorate: (node) => queue.decorate(node),
+    };
+    const { store, request, base } = await setup(t, { prober });
+    const waiting = [];
+    queue = new ProbeQueue({
+        store,
+        probe: () => new Promise((resolve) => waiting.push(resolve)),
+    });
+    t.after(async () => {
+        for (const resolve of waiting)
+            resolve({
+                status: 'timeout',
+                auth: 'unknown',
+                exitIp: null,
+                latencyMs: null,
+                checkedAt: new Date().toISOString(),
+            });
+        await queue.close();
+    });
+    assert.equal(
+        (await request('/api/isp/import/preview', payload)).status,
+        200,
+    );
+    assert.equal(queue.summary().queued, 0);
+    const imported = await (
+        await request('/api/isp/import', {
+            ...payload,
+            content: Array.from(
+                { length: 60 },
+                (_, i) => `proxy${i}.example:80:u:p`,
+            ).join('\n'),
+        })
+    ).json();
+    assert.equal(imported.data.probesQueued, 60);
+    assert.equal(queue.summary().queued + queue.summary().checking, 60);
+    const listed = (
+        await (await request('/api/isp/nodes', undefined, 'GET')).json()
+    ).data;
+    assert.ok(['queued', 'checking'].includes(listed.items[0].probeState));
+    assert.equal(listed.probes.queued + listed.probes.checking, 60);
+    const id = listed.items[0].id;
+    assert.equal(
+        (await request('/api/isp/nodes/check', { ids: [id] }, 'POST', false))
+            .status,
+        401,
+    );
+    assert.equal(
+        (await request('/api/isp/nodes/check', { ids: ['missing'] })).status,
+        409,
+    );
+    assert.equal((await request('/api/isp/nodes/check', {})).status, 400);
+    const checked = await request('/api/isp/nodes/check', { ids: [id] });
+    assert.equal(checked.status, 202);
+    assert.equal((await checked.json()).data.queued, 0);
+    const share = store.createShare({ name: 'Unaffected', scope: 'all' });
+    assert.equal(
+        parse(await (await fetch(`${base}/s/${share.token}/clash.yaml`)).text())
+            .proxies.length,
+        60,
+    );
+});

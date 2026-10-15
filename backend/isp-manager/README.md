@@ -4,7 +4,7 @@
 
 ## 启动
 
-需要 Node.js 24+，依赖使用上层 backend/package.json 中已有的 Express 和 yaml。
+需要 Node.js 24+，依赖使用上层 backend/package.json 中已有的 Express、yaml、undici 和 fetch-socks。
 
 ```sh
 cd backend
@@ -24,8 +24,8 @@ cat isp-manager/.data/admin-token
 ## 使用
 
 1. 点击 **批量导入**，选择代理列表格式与代理协议，可粘贴文本或导入 TXT 文件。
-2. 点击 **预览校验**，查看新增、更新、跳过和错误行。确认后导入有效行，错误行不会入库。
-3. 搜索、筛选分组，或勾选本页节点批量启停、移动分组、删除。分页每页最多 200 条；切换筛选、页码或刷新会清除选择。编辑时密码留空表示不变。
+2. 点击 **预览校验**，查看新增、更新、跳过和错误行。确认后导入有效行，错误行不会入库。新增和更新的节点会自动排队检测；跳过的重复节点不检测。
+3. 搜索、筛选分组，或勾选本页节点批量检测、启停、移动分组、删除。分页每页最多 200 条；切换筛选、页码或刷新会清除选择。编辑时密码留空表示不变。
 4. 到 **分享订阅** 创建链接，或在节点列表批选后创建。复制 Clash 完整配置链接，粘贴到客户端订阅/配置页面。已有自定义配置时可使用 Provider 链接。
 
 每次拉取订阅都会读取当前启用节点，不需要重新创建链接。全部/分组分享自动包含后续新增的匹配节点；所选节点分享按固定 ID 跟踪，修改名称或分组不影响范围。删除节点后不会自动用新 ID 替代。分享卡片提供“撤销”和“删除”：撤销保留记录，删除永久移除分享记录并使链接立即失效；已撤销、已到期订阅也可删除，ISP 节点不受影响。撤销和到期阻止后续下载，已下载的配置仍然有效；要立即阻断代理连接，需要在 ISP 供应商侧修改账号密码。订阅为空时返回 404，避免下发没有可用节点的配置。
@@ -45,7 +45,17 @@ cat isp-manager/.data/admin-token
 - 用户名不能包含 `:`；密码可以包含 `:` 和 `@`。地址在后的格式，从末尾识别 `HOST:PORT`；`USER:PASS@HOST:PORT` 以最后一个 `@` 为地址分隔符。
 - 端口范围 1–65535；不支持空账号或空密码；每批最多 50,000 行且 HTTP 请求 JSON 小于 8 MiB。超限时分批导入。
 - `(protocol, server, port, username)` 相同即为重复账号。默认跳过；“更新密码与分组”仅更新密码与分组，保留 ID、名称与启停。一个批次重复出现同一账号时，更新模式以最后一条为准。
-- 校验只检查输入格式，不连接代理测试可用性。协议选错、代理欠费或白名单限制仍需在供应商侧处理。
+- 预览只校验输入格式；正式导入后异步探测，不阻塞导入响应。协议选错、代理欠费或白名单限制仍需在供应商侧处理。
+
+## 状态检测
+
+- 默认通过代理请求 `https://api.ipify.org?format=json` 获取出口 IP；支持 HTTP CONNECT、HTTPS 代理 TLS 和 SOCKS5 用户名密码认证，TLS 证书验证始终开启。代理凭据只发送给代理服务器，不发送给 IP 检测服务。
+- 默认最多 5 个并发，每次检测最多 10 秒；每次最多读取 8 KiB，不跟随重定向。每个节点消耗一次小型 HTTP 请求的流量。可用 `ISP_PROBE_URL` 指向返回 `{ "ip": "地址" }` 或纯 IP 文本的自有检测服务。
+- 状态包括未检测、排队、检测中、可用、认证失败、连接超时、连接失败、检测服务异常。显示出口 IP、完整请求耗时；悬停可查看检测时间和认证状态。“代理接受连接凭据”仅表示使用当前凭据能建立连接，不代表验证了代理强制认证；没有明确认证拒绝响应时不判定为密码错误。
+- 检测结果只反映管理服务器的出网路径，无法保证使用者所在网络可达；耗时包含代理连接、TLS 握手和检测服务响应，不是 ICMP ping。
+- 手动逐条或勾选本页批量重新检测。队列只在进程内维护，重启后未完成的任务需要手动重试；已完成结果批量原子保存，正常停止会落盘，异常退出可能丢失最后约 1 秒尚未落盘的结果。没有周期性自动检测。
+- 检测失败不会自动停用节点，也不会改变分享范围。修改连接地址、协议、用户名或密码会清除旧结果；修改名称、分组、启停不清除。过时任务不能覆盖新连接结果，删除中的节点不会被检测任务重新创建。
+- 自动刷新仅更新检测状态，不清除勾选或覆盖编辑框。存储失败时页面提示并保留结果等待重试。
 
 ## 配置及部署
 
@@ -56,6 +66,9 @@ cat isp-manager/.data/admin-token
 | ISP_DATA_DIR | 本模块 .data 目录 | 数据与默认管理口令目录 |
 | ISP_ADMIN_TOKEN | 自动生成并保存 | 自定义管理口令，至少 24 位且无空白 |
 | ISP_PUBLIC_BASE_URL | 当前页面所在地址 | 分享 URL 的公开根地址，可包含路径前缀 |
+| ISP_PROBE_URL | https://api.ipify.org?format=json | 出口 IP 检测服务，HTTP(S)，不含 URL 凭据或片段 |
+| ISP_PROBE_TIMEOUT_MS | 10000 | 单次检测时限，50–60000 毫秒 |
+| ISP_PROBE_CONCURRENCY | 5 | 检测并发数，1–20 |
 
 向其他人分享需要将服务部署到他们能访问的地址，localhost 链接只在本机有效。建议用 HTTPS 反向代理。例：页面位于 `https://isp.example/manager/`，服务器设置 `ISP_PUBLIC_BASE_URL=https://isp.example/manager`，Nginx 配置：
 
@@ -82,9 +95,10 @@ location /manager/ {
 
 | 方法 | 路径 | 参数/作用 |
 | --- | --- | --- |
-| GET | /nodes | q, group, enabled=true/false, page, pageSize（最大200） |
+| GET | /nodes | q, group, enabled=true/false, page, pageSize（最大200）；节点含 health/probeState，probes 含队列计数和存储异常状态 |
 | POST | /import/preview | content, format, protocol, group, duplicate=skip/update；无写入 |
-| POST | /import | 同预览；导入有效行 |
+| POST | /import | 同预览；导入有效行，probesQueued 为自动排队数 |
+| POST | /nodes/check | ids（1–50000 个节点 ID）；返回 202，queued 为本次新排队数，重复任务合并 |
 | PATCH | /nodes/:id | name, protocol, server, port, username, password, group, enabled |
 | POST | /nodes/batch | ids, action=enable/disable/delete/group, group |
 | GET | /shares | 列出分享及完整/Provider链接 |
@@ -99,6 +113,6 @@ location /manager/ {
 node --test isp-manager/test/*.test.mjs
 ```
 
-测试使用临时目录与合成节点，覆盖四格式、IPv6、特殊字符、错误行、万级导入、去重与密码更新、批量校验、写失败回滚、重启读取、HTTP 鉴权、范围隔离、撤销/到期、Clash YAML 回读。
+测试使用临时目录与合成节点，覆盖四格式、IPv6、特殊字符、错误行、万级导入、去重与密码更新、批量校验、写失败回滚、重启读取、HTTP 鉴权、范围隔离、撤销/到期、Clash YAML 回读，以及本地 HTTP/HTTPS/SOCKS5 探测、证书校验、认证失败、超时、异常检测响应、队列并发、旧结果隔离、保存失败重试。探测测试只使用本地合成服务；test/fixtures 的私钥仅用于测试公开证书。
 
 代码以仓库 AGPL-3.0 许可证提供；参见仓库根目录 LICENSE。

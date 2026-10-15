@@ -18,7 +18,7 @@ const state = {
     session: 0,
 };
 const apiBase = new URL('./api/isp/', location.href);
-let toastTimer, searchTimer;
+let toastTimer, searchTimer, probeTimer;
 function toast(message, error = false) {
     $('toast').textContent = message;
     $('toast').classList.toggle('error-toast', error);
@@ -51,6 +51,7 @@ function loggedOut() {
     state.selected.clear();
     state.preview = '';
     clearTimeout(searchTimer);
+    clearTimeout(probeTimer);
     $('nodes-body').replaceChildren();
     $('shares-list').replaceChildren();
     $('import-preview').replaceChildren();
@@ -155,6 +156,113 @@ async function loadNodes() {
     state.selected.clear();
     updateGroups();
     renderNodes();
+    showProbeProgress(data.probes);
+}
+const healthLabels = {
+    online: '可用',
+    auth_failed: '认证失败',
+    timeout: '连接超时',
+    unreachable: '连接失败',
+    check_failed: '检测服务异常',
+    queued: '等待检测',
+    checking: '检测中',
+};
+function renderHealth(cell, node) {
+    cell.replaceChildren();
+    const status = node.probeState || node.health?.status;
+    cell.append(
+        element(
+            'span',
+            `probe-status ${status || 'unchecked'}`,
+            healthLabels[status] || '未检测',
+        ),
+    );
+    if (!node.probeState && node.health) {
+        const result = node.health;
+        if (result.latencyMs !== null)
+            cell.append(
+                element('span', 'probe-detail', `${result.latencyMs} ms`),
+            );
+        if (result.exitIp)
+            cell.append(element('span', 'probe-detail exit-ip', result.exitIp));
+        const auth = {
+            accepted: '代理接受连接凭据',
+            rejected: '代理拒绝认证',
+            unknown: '认证状态未知',
+        }[result.auth];
+        cell.title = `${auth || ''} · ${new Date(
+            result.checkedAt,
+        ).toLocaleString('zh-CN')}`;
+    } else
+        cell.title = node.probeState
+            ? '检测完成后自动更新'
+            : '点击检测以获取连通性和出口 IP';
+}
+function showProbeProgress(probes) {
+    clearTimeout(probeTimer);
+    const remaining = (probes?.queued || 0) + (probes?.checking || 0);
+    $('probe-progress').textContent = probes?.storageError
+        ? '检测结果暂未保存，将自动重试。请检查数据目录权限。'
+        : remaining
+        ? `正在检测 ${probes.checking} 个 · 排队 ${probes.queued} 个`
+        : '导入后自动检测 · 可手动重新检测';
+    if (
+        state.token &&
+        state.tab === 'nodes' &&
+        (remaining || probes?.storageError)
+    ) {
+        probeTimer = setTimeout(() => run(pollProbes), 1500);
+    }
+}
+async function pollProbes() {
+    if (!state.token || state.tab !== 'nodes') return;
+    const version = state.requestVersion;
+    const query = new URLSearchParams({
+        page: state.page,
+        pageSize: state.pageSize,
+        q: $('search').value,
+    });
+    if ($('group-filter').value !== '*')
+        query.set('group', $('group-filter').value.slice(2));
+    if ($('status-filter').value)
+        query.set('enabled', $('status-filter').value);
+    let data;
+    try {
+        data = await api(`nodes?${query}`);
+    } catch (error) {
+        if (
+            !(error instanceof CancelledRequest) &&
+            state.token &&
+            state.tab === 'nodes'
+        ) {
+            $('probe-progress').textContent = '检测状态刷新失败，正在重试…';
+            probeTimer = setTimeout(() => run(pollProbes), 5000);
+        }
+        return;
+    }
+    if (version !== state.requestVersion || state.tab !== 'nodes') return;
+    // Update only health cells: keep selection, keyboard focus and open forms intact.
+    const updates = new Map(data.items.map((node) => [node.id, node]));
+    for (const node of state.nodes) {
+        const fresh = updates.get(node.id);
+        if (!fresh) continue;
+        node.health = fresh.health;
+        node.probeState = fresh.probeState;
+        const cell = document.querySelector(`[data-health-id="${node.id}"]`);
+        if (cell) renderHealth(cell, node);
+        const button = document.querySelector(`[data-probe-id="${node.id}"]`);
+        if (button) button.disabled = Boolean(node.probeState);
+    }
+    showProbeProgress(data.probes);
+}
+async function checkNodes(ids) {
+    const result = await api('nodes/check', { ids }, 'POST');
+    await pollProbes();
+    toast(
+        result.queued
+            ? `已加入检测队列：${result.queued} 个节点`
+            : '所选节点已在检测队列中',
+    );
 }
 function renderNodes() {
     $('node-count').textContent = state.stats.total.toLocaleString();
@@ -208,7 +316,16 @@ function renderNodes() {
                     node.enabled ? '已启用' : '已停用',
                 ),
             );
+            const health = element('td', 'health-cell');
+            health.dataset.healthId = node.id;
+            renderHealth(health, node);
             const actions = element('td', 'align-right');
+            const probe = element('button', 'row-action', '检测');
+            probe.dataset.probeId = node.id;
+            probe.disabled = Boolean(node.probeState);
+            probe.addEventListener('click', () =>
+                run(() => checkNodes([node.id]), null, probe),
+            );
             const edit = element('button', 'row-action', '编辑');
             edit.addEventListener('click', () => editNode(node));
             const toggle = element(
@@ -231,10 +348,11 @@ function renderNodes() {
                     toggle,
                 ),
             );
-            actions.append(edit, toggle);
+            actions.append(probe, edit, toggle);
             row.append(
                 checkCell,
                 nameCell,
+                health,
                 protocol,
                 account,
                 group,
@@ -334,6 +452,7 @@ async function loadShares() {
 function setTab(tab) {
     if (!state.token) return open('login-dialog');
     state.tab = tab;
+    clearTimeout(probeTimer);
     for (const t of ['nodes', 'shares', 'help'])
         $(`${t}-panel`).hidden = t !== tab;
     for (const button of document.querySelectorAll('[data-tab]')) {
@@ -645,6 +764,9 @@ $('select-all').addEventListener('change', () => {
 });
 for (const action of ['enable', 'disable', 'group', 'delete'])
     $(`bulk-${action}`).addEventListener('click', () => batchDialog(action));
+$('bulk-check').addEventListener('click', () =>
+    run(() => checkNodes([...state.selected]), null, $('bulk-check')),
+);
 $('bulk-share').addEventListener('click', () => shareDialog(true));
 for (const id of ['share-open', 'empty-share'])
     $(id).addEventListener('click', () => shareDialog());
@@ -702,7 +824,7 @@ $('commit-import').addEventListener('click', () =>
             state.page = 1;
             await loadNodes();
             toast(
-                `导入完成：新增 ${result.created}，更新 ${result.updated}，跳过 ${result.skipped}，错误 ${result.errorCount}`,
+                `导入完成：新增 ${result.created}，更新 ${result.updated}，跳过 ${result.skipped}，错误 ${result.errorCount}；${result.probesQueued} 个节点已排队检测`,
             );
         },
         'import-error',

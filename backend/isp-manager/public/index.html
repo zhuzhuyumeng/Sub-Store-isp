@@ -82,7 +82,8 @@
                     <div class="bulk-bar" id="bulk-bar" hidden>
                         <span id="selected-count">已选 0 项</span>
                         <div>
-                            <button id="bulk-enable">启用</button
+                            <button id="bulk-check">检测</button
+                            ><button id="bulk-enable">启用</button
                             ><button id="bulk-disable">停用</button
                             ><button id="bulk-group">移动分组</button
                             ><button id="bulk-share">创建订阅</button
@@ -91,6 +92,9 @@
                             </button>
                         </div>
                     </div>
+                    <p id="probe-progress" class="probe-progress" role="status">
+                        导入后自动检测 · 可手动重新检测
+                    </p>
                     <div class="table-scroll">
                         <table>
                             <thead>
@@ -103,10 +107,11 @@
                                         />
                                     </th>
                                     <th>节点 / 地址</th>
+                                    <th>检测 / 出口 IP</th>
                                     <th>协议</th>
                                     <th>账号</th>
                                     <th>分组</th>
-                                    <th>状态</th>
+                                    <th>启用状态</th>
                                     <th class="align-right">操作</th>
                                 </tr>
                             </thead>
@@ -143,7 +148,8 @@
                     </footer>
                 </div>
                 <p class="footnote">
-                    只有启用的节点会出现在订阅中。密码默认隐藏，更新密码时可直接填写新值。
+                    检测结果反映服务器到 ISP
+                    的连通性，延迟包含完整请求耗时。检测失败不会自动停用，只有启用的节点会出现在订阅中。
                 </p>
             </section>
             <section id="shares-panel" aria-label="分享订阅" hidden>
@@ -189,7 +195,8 @@
                     <li>
                         <strong>整理节点</strong>
                         <p>
-                            可按分组和状态筛选。勾选本页节点后可批量启停、移动分组、删除或创建订阅。
+                            导入后自动探测连通性、认证和出口
+                            IP。可点击“检测”重新探测，也可勾选本页节点批量检测、启停、移动分组、删除或创建订阅。
                         </p>
                     </li>
                     <li>
@@ -208,6 +215,12 @@
                         </p>
                     </li>
                 </ol>
+                <h3>节点检测</h3>
+                <p>
+                    默认通过代理访问 api.ipify.org 获取出口 IP，同时检测 5
+                    个节点，单次最多等待 10
+                    秒。悬停检测结果可查看认证状态和检测时间。“接受连接凭据”表示这组凭据可建立连接，未验证代理是否强制认证。服务器检测成功不保证客户端网络同样可达；超时或失败时，可检查协议、供应商白名单和账号有效期。修改连接地址或密码后需重新检测。
+                </p>
                 <h3>支持的导入格式</h3>
                 <pre>
 HOST:PORT:USER:PASS

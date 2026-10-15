@@ -10,6 +10,7 @@ import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { IspStore } from './store.mjs';
 import { createApp } from './app.mjs';
+import { createProbe, ProbeQueue } from './probe.mjs';
 
 try {
     const dir = resolve(
@@ -33,7 +34,16 @@ try {
         throw new Error('ISP_PORT 必须为 1–65535');
     const host = process.env.ISP_HOST || '127.0.0.1';
     const store = new IspStore({ file: join(dir, 'store.json') });
+    const prober = new ProbeQueue({
+        store,
+        probe: createProbe({
+            target: process.env.ISP_PROBE_URL,
+            timeoutMs: Number(process.env.ISP_PROBE_TIMEOUT_MS || 10000),
+        }),
+        concurrency: Number(process.env.ISP_PROBE_CONCURRENCY || 5),
+    });
     const app = createApp({
+        prober,
         store,
         adminToken: token,
         publicBaseUrl: process.env.ISP_PUBLIC_BASE_URL,
@@ -55,7 +65,15 @@ try {
         console.error('服务启动失败，请检查监听地址及端口是否被占用');
         process.exitCode = 1;
     });
-    const stop = () => server.close(() => process.exit(0));
+    let stopping = false;
+    const stop = async () => {
+        if (stopping) return;
+        stopping = true;
+        const closed = new Promise((resolve) => server.close(resolve));
+        await prober.close();
+        await closed;
+        process.exit(prober.storageError ? 1 : 0);
+    };
     process.on('SIGTERM', stop);
     process.on('SIGINT', stop);
 } catch (error) {

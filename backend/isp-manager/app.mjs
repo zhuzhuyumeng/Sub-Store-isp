@@ -23,7 +23,7 @@ export function normalizePublicBase(value = '') {
         throw new Error('ISP_PUBLIC_BASE_URL 不允许凭据、查询或片段');
     return url.href.replace(/\/+$/, '');
 }
-export function createApp({ store, adminToken, publicBaseUrl = '' }) {
+export function createApp({ store, adminToken, publicBaseUrl = '', prober }) {
     if (
         typeof adminToken !== 'string' ||
         adminToken.length < 24 ||
@@ -67,12 +67,30 @@ export function createApp({ store, adminToken, publicBaseUrl = '' }) {
         const allowed = ['q', 'group', 'enabled', 'page', 'pageSize'];
         if (Object.keys(req.query).some((k) => !allowed.includes(k)))
             throw new IspError('不支持的筛选参数');
-        ok(res, store.list(req.query));
+        const data = store.list(req.query);
+        if (prober) {
+            data.items = data.items.map((node) => prober.decorate(node));
+            data.probes = prober.summary();
+        }
+        ok(res, data);
     });
     app.post('/api/isp/import/preview', (req, res) =>
         ok(res, store.import(req.body, { preview: true })),
     );
-    app.post('/api/isp/import', (req, res) => ok(res, store.import(req.body)));
+    app.post('/api/isp/import', (req, res) => {
+        let probesQueued = 0;
+        const result = store.import(req.body, {
+            onImported: (ids) => {
+                if (prober && ids.length)
+                    probesQueued = prober.enqueue(ids).queued;
+            },
+        });
+        ok(res, { ...result, probesQueued });
+    });
+    app.post('/api/isp/nodes/check', (req, res) => {
+        if (!prober) throw new IspError('检测服务未启用', 503);
+        ok(res, prober.enqueue(req.body?.ids), 202);
+    });
     app.patch('/api/isp/nodes/:id', (req, res) =>
         ok(res, store.update(req.params.id, req.body)),
     );

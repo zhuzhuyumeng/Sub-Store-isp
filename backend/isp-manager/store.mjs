@@ -15,9 +15,12 @@ import { IspError, parseImport, textField, validateNode } from './parser.mjs';
 
 const identity = (n) =>
     JSON.stringify([n.protocol, n.server, n.port, n.username]);
-const visible = ({ password, ...rest }) => ({ ...rest, hasPassword: true });
+const visible = ({ password, probeRevision, ...rest }) => ({
+    ...rest,
+    hasPassword: true,
+});
 const now = () => new Date().toISOString();
-function validIds(ids, nodes) {
+export function validIds(ids, nodes) {
     if (
         !Array.isArray(ids) ||
         !ids.length ||
@@ -121,9 +124,11 @@ export class IspStore {
             if (existsSync(temporary)) unlinkSync(temporary);
         }
         this.state = next;
+        this.nodeIndex = null;
         return result;
     }
-    import(input, { preview = false } = {}) {
+    import(input, { preview = false, onImported } = {}) {
+        const imported = new Set();
         if (!['skip', 'update'].includes(input?.duplicate ?? 'skip'))
             throw new IspError('重复处理方式无效');
         const parsed = parseImport(input);
@@ -146,6 +151,11 @@ export class IspStore {
                 if (existing) {
                     result = existing;
                     if (input.duplicate === 'update') {
+                        if (existing.password !== node.password) {
+                            delete existing.health;
+                            existing.probeRevision = randomUUID();
+                        }
+                        imported.add(existing.id);
                         Object.assign(existing, {
                             password: node.password,
                             group: node.group,
@@ -162,6 +172,7 @@ export class IspStore {
                     result = {
                         ...node,
                         id,
+                        probeRevision: randomUUID(),
                         name: `${node.server.slice(0, 180)}:${
                             node.port
                         } · ${id.slice(0, 8)}`,
@@ -169,6 +180,7 @@ export class IspStore {
                         createdAt: timestamp,
                         updatedAt: timestamp,
                     };
+                    imported.add(id);
                     map.set(identity(node), result);
                     state.nodes.push(result);
                     summary.created++;
@@ -180,7 +192,9 @@ export class IspStore {
             return summary;
         };
         if (preview) return apply(structuredClone(this.state));
-        return this.transaction(apply);
+        const result = this.transaction(apply);
+        onImported?.([...imported]);
+        return result;
     }
     list(query = {}) {
         const integer = (v, fallback, max) => {
@@ -233,7 +247,8 @@ export class IspStore {
         };
     }
     get(id) {
-        const node = this.state.nodes.find((n) => n.id === id);
+        this.nodeIndex ??= new Map(this.state.nodes.map((n) => [n.id, n]));
+        const node = this.nodeIndex.get(id);
         if (!node) throw new IspError('节点不存在', 404);
         return structuredClone(node);
     }
@@ -266,12 +281,37 @@ export class IspStore {
             throw new IspError('该账号已存在', 409);
         return this.transaction((state) => {
             const node = state.nodes.find((n) => n.id === id);
+            if (
+                ['protocol', 'server', 'port', 'username', 'password'].some(
+                    (key) => existing[key] !== clean[key],
+                )
+            ) {
+                delete node.health;
+                node.probeRevision = randomUUID();
+            }
             Object.assign(node, clean, {
                 name: merged.name,
                 enabled: merged.enabled,
                 updatedAt: now(),
             });
             return visible(node);
+        });
+    }
+    saveProbeResults(results) {
+        const current = new Map(this.state.nodes.map((n) => [n.id, n]));
+        const valid = new Map(
+            results
+                .filter(
+                    (item) =>
+                        current.has(item.id) &&
+                        current.get(item.id).probeRevision === item.revision,
+                )
+                .map((item) => [item.id, item.result]),
+        );
+        if (!valid.size) return;
+        this.transaction((state) => {
+            for (const node of state.nodes)
+                if (valid.has(node.id)) node.health = valid.get(node.id);
         });
     }
     batch({ ids, action, group }) {

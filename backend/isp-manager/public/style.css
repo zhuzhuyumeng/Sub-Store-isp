@@ -893,3 +893,43 @@ dialog::backdrop {
         scroll-behavior: auto !important;
     }
 }
+
+.probe-progress {
+    margin: 0;
+    padding: 10px 20px;
+    border-top: 1px solid var(--border, #eef0f4);
+    color: #64748b;
+    font-size: 12px;
+}
+.health-cell {
+    min-width: 150px;
+}
+.probe-status {
+    font-size: 12px;
+    font-weight: 600;
+    color: #64748b;
+}
+.probe-status.online {
+    color: #17865c;
+}
+.probe-status.auth_failed,
+.probe-status.unreachable {
+    color: #c34646;
+}
+.probe-status.timeout,
+.probe-status.check_failed {
+    color: #b07721;
+}
+.probe-status.checking,
+.probe-status.queued {
+    color: #3979e3;
+}
+.probe-detail {
+    display: block;
+    font-size: 11px;
+    color: #64748b;
+    margin-top: 3px;
+}
+.exit-ip {
+    font-family: ui-monospace, monospace;
+}
