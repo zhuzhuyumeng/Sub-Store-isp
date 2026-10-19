@@ -6,16 +6,20 @@ import { join } from 'node:path';
 import { parse } from 'yaml';
 import { IspStore } from '../store.mjs';
 import { createApp } from '../app.mjs';
+import { ProbeQueue } from '../probe.mjs';
 
 const adminToken = 'test-admin-token-01234567890123456789';
 async function setup(t, options = {}) {
     const dir = mkdtempSync(join(tmpdir(), 'isp-http-'));
     const store = new IspStore({ file: join(dir, 'store.json') });
-    const app = createApp({ store, adminToken, ...options });
+    const { probe, ...appOptions } = options;
+    const prober = probe ? new ProbeQueue({ store, probe }) : options.prober;
+    const app = createApp({ store, adminToken, ...appOptions, prober });
     const server = app.listen(0, '127.0.0.1');
     await new Promise((r) => server.once('listening', r));
     t.after(async () => {
         await new Promise((r) => server.close(r));
+        await prober?.close?.();
         rmSync(dir, { recursive: true, force: true });
     });
     const base = `http://127.0.0.1:${server.address().port}`;
@@ -28,7 +32,7 @@ async function setup(t, options = {}) {
             },
             ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         });
-    return { store, base, request };
+    return { store, base, request, prober };
 }
 const payload = {
     format: 'HOST:PORT:USER:PASS',
@@ -57,6 +61,40 @@ test('management requires token, even when body is malformed; static page remain
     );
     const noCors = await request('/api/isp/nodes', undefined, 'GET');
     assert.equal(noCors.headers.get('access-control-allow-origin'), null);
+});
+
+test('management API is open when no admin token is configured', async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'isp-http-open-'));
+    const store = new IspStore({ file: join(dir, 'store.json') });
+    const app = createApp({ store, adminToken: null });
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise((r) => server.once('listening', r));
+    t.after(async () => {
+        await new Promise((r) => server.close(r));
+        rmSync(dir, { recursive: true, force: true });
+    });
+    const response = await fetch(
+        `http://127.0.0.1:${server.address().port}/api/isp/iproyal/status`,
+    );
+    assert.equal(response.status, 200);
+});
+
+test('IPRoyal status and manual sync are exposed through the existing management API', async (t) => {
+    const sync = {
+        status: () => ({ status: 'ok', syncedAt: '2026-10-16T12:00:00.000Z' }),
+        run: async () => ({ status: 'ok', matched: 1, unmatched: 0 }),
+    };
+    const { request } = await setup(t, { iproyalSync: sync });
+    const status = await request('/api/isp/iproyal/status', undefined, 'GET');
+    assert.equal(status.status, 200);
+    assert.equal((await status.json()).data.status, 'ok');
+    const result = await request('/api/isp/iproyal/sync');
+    assert.equal(result.status, 200);
+    assert.deepEqual((await result.json()).data, {
+        status: 'ok',
+        matched: 1,
+        unmatched: 0,
+    });
 });
 test('full flow previews, imports, exports lossless Clash config/provider and revokes', async (t) => {
     const { base, request } = await setup(t, {
@@ -158,6 +196,46 @@ test('share scope cannot be widened by queries and duplicate node names stay val
         400,
     );
 });
+test('share rename preserves links and scope, and exports the chosen Unicode title', async (t) => {
+    const { base, request, store } = await setup(t);
+    store.import(payload);
+    const share = store.createShare({ name: 'Old', scope: 'all' });
+    const name = '美国 ISP · 私人线路';
+    assert.equal((await request(`/api/isp/shares/${share.id}`, { name }, 'PATCH', false)).status, 401);
+    const response = await request(`/api/isp/shares/${share.id}`, { name: ` ${name} ` }, 'PATCH');
+    assert.equal(response.status, 200);
+    const updated = (await response.json()).data;
+    assert.equal(updated.name, name);
+    assert.equal(updated.token, share.token);
+    assert.equal(updated.scope, share.scope);
+    assert.equal(new IspStore({ file: store.file }).listShares()[0].name, name);
+    for (const file of ['clash.yaml', 'provider.yaml']) {
+        const download = await fetch(`${base}/s/${share.token}/${file}`);
+        assert.equal(download.status, 200);
+        const title = download.headers.get('profile-title');
+        assert.ok(title.startsWith('base64:'));
+        assert.equal(Buffer.from(title.slice(7), 'base64').toString('utf8'), name);
+        const disposition = download.headers.get('content-disposition');
+        assert.ok(disposition.includes(`filename=${file}`));
+        assert.ok(disposition.includes(`filename*=UTF-8''${encodeURIComponent(name)}.yaml`));
+        assert.ok(!disposition.includes('\\'));
+    }
+    for (const invalid of ['', ' ', 'bad\r\nheader', 'x'.repeat(201)])
+        assert.equal((await request(`/api/isp/shares/${share.id}`, { name: invalid }, 'PATCH')).status, 400);
+    assert.equal((await request(`/api/isp/shares/${share.id}`, { name: 'Changed', scope: 'selected' }, 'PATCH')).status, 400);
+    assert.equal(store.listShares()[0].name, name);
+    assert.equal((await request('/api/isp/shares/missing', { name }, 'PATCH')).status, 404);
+});
+
+test('malformed Unicode in saved titles does not break subscription downloads', async (t) => {
+    const { base, store } = await setup(t);
+    store.import(payload);
+    const share = store.createShare({ name: 'Broken\uD800', scope: 'all' });
+    const response = await fetch(`${base}/s/${share.token}/clash.yaml`);
+    assert.equal(response.status, 200);
+    assert.ok(response.headers.get('content-disposition').includes('Broken%EF%BF%BD.yaml'));
+});
+
 test('malformed bodies and invalid IDs return sanitized errors', async (t) => {
     const { base, request } = await setup(t);
     const malformed = await fetch(base + '/api/isp/import', {
@@ -181,6 +259,46 @@ test('malformed bodies and invalid IDs return sanitized errors', async (t) => {
     );
     const badToken = await fetch(base + '/s/nope/clash.yaml');
     assert.equal(badToken.status, 404);
+});
+
+test('subscription card expiry follows the earliest included node or share expiry for both exports', async (t) => {
+    const { base, store } = await setup(t);
+    store.import({ ...payload, content: '203.0.113.10:80:u:p\n203.0.113.11:80:u:p\n203.0.113.12:80:u:p' });
+    const [first, second, excluded] = store.list({}).items;
+    const metadata = (expiresAt) => ({ orderId: 420, status: 'confirmed', expiresAt, syncedAt: '2026-10-19T00:00:00.000Z', syncStatus: 'matched' });
+    store.saveIprRoyalSync({
+        [first.id]: metadata('2099-01-02T00:00:00.000Z'),
+        [second.id]: metadata('2099-01-01T00:00:00.000Z'),
+        [excluded.id]: metadata('2098-01-01T00:00:00.000Z'),
+    }, { fetchedOrders: 3, unmatched: 0 });
+    const share = store.createShare({ name: 'Selected', scope: 'selected', ids: [first.id, second.id] });
+    const getHeader = async (token, file = 'clash.yaml') =>
+        (await fetch(`${base}/s/${token}/${file}`)).headers.get('subscription-userinfo');
+    for (const file of ['clash.yaml', 'provider.yaml'])
+        assert.equal(await getHeader(share.token, file), 'expire=4070908800');
+    store.update(second.id, { enabled: false });
+    assert.equal(await getHeader(share.token), 'expire=4070995200');
+    const shorter = store.createShare({ name: 'Shorter', scope: 'selected', ids: [first.id], expiresAt: '2098-01-01T00:00:00.000Z' });
+    assert.equal(await getHeader(shorter.token), 'expire=4039372800');
+    store.saveIprRoyalSync({ [first.id]: metadata('2099-01-03T00:00:00.000Z') }, { fetchedOrders: 1, unmatched: 0 });
+    assert.equal(await getHeader(share.token), 'expire=4071081600');
+});
+
+test('unknown expiry is omitted, share-only expiry is advertised, expired nodes stay in export', async (t) => {
+    const { base, store } = await setup(t);
+    store.import(payload);
+    const node = store.list({}).items[0];
+    const share = store.createShare({ name: 'No expiry', scope: 'all' });
+    let response = await fetch(`${base}/s/${share.token}/clash.yaml`);
+    assert.equal(response.headers.get('subscription-userinfo'), null);
+    const limited = store.createShare({ name: 'Share only', scope: 'all', expiresAt: '2099-01-01T00:00:00.000Z' });
+    response = await fetch(`${base}/s/${limited.token}/clash.yaml`);
+    assert.equal(response.headers.get('subscription-userinfo'), 'expire=4070908800');
+    store.saveIprRoyalSync({ [node.id]: { orderId: 420, status: 'expired', syncStatus: 'expired', expiresAt: '2000-01-01T00:00:00.000Z', syncedAt: '2026-10-19T00:00:00.000Z' } }, { fetchedOrders: 1, unmatched: 0 });
+    response = await fetch(`${base}/s/${share.token}/clash.yaml`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('subscription-userinfo'), 'expire=946684800');
+    assert.equal(parse(await response.text()).proxies.length, 1);
 });
 test('expiry is enforced and selected scope follows IDs through group edits', async (t) => {
     const { base, store } = await setup(t);
@@ -342,5 +460,126 @@ test('import schedules all changed nodes; protected manual checks and status do 
         parse(await (await fetch(`${base}/s/${share.token}/clash.yaml`)).text())
             .proxies.length,
         60,
+    );
+});
+
+test('check-all requires authentication and queues every page including disabled nodes once', async (t) => {
+    const { store, request, prober } = await setup(t, {
+        probe: (node, { signal }) =>
+            new Promise((resolve) => {
+                signal.addEventListener('abort', () => resolve({}), {
+                    once: true,
+                });
+            }),
+    });
+    store.import({
+        ...payload,
+        content: Array.from(
+            { length: 61 },
+            (_, i) => `proxy${i}.example:80:u:p`,
+        ).join('\n'),
+    });
+    const ids = store.state.nodes.map((node) => node.id);
+    store.update(ids[60], { enabled: false, group: 'UK' });
+    const before = structuredClone(store.state);
+    assert.equal(
+        (await request('/api/isp/nodes/check-all', undefined, 'POST', false))
+            .status,
+        401,
+    );
+    assert.equal(prober.summary().queued + prober.summary().checking, 0);
+
+    const response = await request('/api/isp/nodes/check-all');
+    assert.equal(response.status, 202);
+    assert.equal((await response.json()).data.queued, 61);
+    assert.equal(prober.summary().queued + prober.summary().checking, 61);
+    assert.equal(prober.view(store.get(ids[60])), 'queued');
+    const lastPage = (
+        await (await request('/api/isp/nodes?page=2', undefined, 'GET')).json()
+    ).data;
+    assert.equal(lastPage.items.length, 11);
+    assert.ok(lastPage.items.every((node) => node.probeState === 'queued'));
+    const repeated = await request('/api/isp/nodes/check-all');
+    assert.equal((await repeated.json()).data.queued, 0);
+    assert.deepEqual(store.state, before);
+});
+
+test('check-all handles an empty store and reports an unavailable prober', async (t) => {
+    const { request, prober } = await setup(t, {
+        probe: async () => assert.fail('empty store must not probe'),
+    });
+    const response = await request('/api/isp/nodes/check-all');
+    assert.equal(response.status, 202);
+    assert.equal((await response.json()).data.queued, 0);
+    assert.equal(prober.summary().checking, 0);
+    const unavailable = await setup(t);
+    assert.equal(
+        (await unavailable.request('/api/isp/nodes/check-all')).status,
+        503,
+    );
+});
+
+test('group management is authenticated and renaming keeps subscription URLs while deletion revokes them', async (t) => {
+    const { store, request, base } = await setup(t);
+    for (const [method, body] of [
+        ['GET', undefined],
+        ['POST', { name: 'US' }],
+        ['PATCH', { name: 'US', newName: 'New' }],
+        ['DELETE', { name: 'US' }],
+    ]) {
+        assert.equal(
+            (await request('/api/isp/groups', body, method, false)).status,
+            401,
+        );
+    }
+    const name = '香港 / 家宽 ? #';
+    assert.equal((await request('/api/isp/groups', { name })).status, 201);
+    assert.deepEqual(
+        (await (await request('/api/isp/groups', undefined, 'GET')).json())
+            .data,
+        [{ name, nodeCount: 0, shareCount: 0 }],
+    );
+    assert.equal((await request('/api/isp/groups', { name })).status, 409);
+    for (const body of [undefined, {}, [], { name: ' ' }, { name: 1 }]) {
+        assert.equal((await request('/api/isp/groups', body)).status, 400);
+    }
+    store.import({ ...payload, group: name });
+    const share = store.createShare({
+        name: 'Group link',
+        scope: 'group',
+        group: name,
+    });
+    const link = `${base}/s/${share.token}/provider.yaml`;
+    assert.equal((await fetch(link)).status, 200);
+    assert.equal(
+        (await request('/api/isp/groups', { name, newName: 'New' }, 'PATCH'))
+            .status,
+        200,
+    );
+    assert.equal((await fetch(link)).status, 200);
+    assert.equal(store.list().items[0].group, 'New');
+    assert.equal(
+        (
+            await request(
+                '/api/isp/groups',
+                { name: 'Missing', newName: 'New' },
+                'PATCH',
+            )
+        ).status,
+        404,
+    );
+    assert.equal(
+        (await request('/api/isp/groups', { name: 'New' }, 'DELETE')).status,
+        200,
+    );
+    assert.equal((await fetch(link)).status, 404);
+    assert.equal(store.list().items[0].group, '');
+    assert.equal(
+        (await request('/api/isp/groups', { name: 'New' }, 'DELETE')).status,
+        404,
+    );
+    assert.equal(
+        (await request('/api/isp/groups', { name: '' }, 'DELETE')).status,
+        400,
     );
 });

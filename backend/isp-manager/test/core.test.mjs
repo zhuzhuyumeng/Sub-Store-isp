@@ -206,3 +206,52 @@ test('long valid hostnames survive persistence and restart', (t) => {
     store.import(input(`${host}:80:u:p`));
     assert.equal(new IspStore({ file }).list({}).total, 1);
 });
+
+test('IPRoyal metadata is saved atomically, visible without passwords, and survives restart', (t) => {
+    const { file } = fixture(t);
+    const store = new IspStore({ file });
+    store.import(input('203.0.113.10:12323:u:p'));
+    const id = store.list({}).items[0].id;
+    const syncedAt = '2026-10-16T12:00:00.000Z';
+    const result = store.saveIprRoyalSync(
+        {
+            [id]: {
+                orderId: 420,
+                status: 'expired',
+                expiresAt: '2020-04-20T10:25:12.000Z',
+                syncedAt,
+                syncStatus: 'expired',
+            },
+        },
+        { fetchedOrders: 1, unmatched: 0, syncedAt },
+    );
+    assert.deepEqual(result, { matched: 1, unmatched: 0 });
+    assert.equal(store.get(id).iproyal.orderId, 420);
+    assert.equal(store.get(id).enabled, true);
+    assert.equal(store.list({}).items[0].password, undefined);
+    assert.equal(new IspStore({ file }).get(id).iproyal.syncStatus, 'expired');
+    assert.equal(store.iproyalSyncState().status, 'ok');
+});
+
+test('IPRoyal sync failure records only a sanitized status and preserves node metadata', (t) => {
+    const { file } = fixture(t);
+    const store = new IspStore({ file });
+    store.import(input('203.0.113.10:12323:u:p'));
+    const id = store.list({}).items[0].id;
+    store.saveIprRoyalSync(
+        {
+            [id]: {
+                orderId: 420,
+                status: 'confirmed',
+                expiresAt: '2099-04-20T10:25:12.000Z',
+                syncedAt: '2026-10-16T12:00:00.000Z',
+                syncStatus: 'matched',
+            },
+        },
+        { fetchedOrders: 1, unmatched: 0, syncedAt: '2026-10-16T12:00:00.000Z' },
+    );
+    store.recordIprRoyalSyncFailure('request failed [redacted]', '2026-10-16T12:01:00.000Z');
+    assert.equal(store.get(id).iproyal.orderId, 420);
+    assert.equal(store.iproyalSyncState().status, 'error');
+    assert.equal(store.iproyalSyncState().error, 'request failed [redacted]');
+});

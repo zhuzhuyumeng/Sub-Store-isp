@@ -8,6 +8,7 @@
         <link rel="icon" href="./icon.svg" type="image/svg+xml" />
         <link rel="stylesheet" href="./style.css" />
         <script src="./app.js" defer></script>
+        <script src="./groups.js" defer></script>
     </head>
     <body>
         <header class="topbar">
@@ -52,9 +53,23 @@
                         </h2>
                         <p id="stats" class="muted">准备导入第一批代理</p>
                     </div>
-                    <button id="import-open" class="primary">
-                        ＋ 批量导入
-                    </button>
+                    <div class="node-actions">
+                        <button id="groups-open">管理分组</button>
+                        <button
+                            id="check-all"
+                            disabled
+                            title="检测所有已导入节点，包含停用节点，不受筛选或分页影响"
+                        >
+                            一键检测全部
+                        </button>
+                        <button id="iproyal-config-open">配置 API</button>
+                        <button id="iproyal-sync" title="同步 IPRoyal 订单状态">
+                            同步 IPRoyal
+                        </button>
+                        <button id="import-open" class="primary">
+                            ＋ 批量导入
+                        </button>
+                    </div>
                 </div>
                 <div class="surface">
                     <div class="filters">
@@ -92,8 +107,9 @@
                             </button>
                         </div>
                     </div>
-                    <p id="probe-progress" class="probe-progress" role="status">
-                        导入后自动检测 · 可手动重新检测
+                    <p class="probe-progress" role="status">
+                        <span id="probe-progress">检测成功后按国家覆盖分组 · 定位失败保留原分组</span>
+                        <span id="iproyal-status" class="iproyal-status">IPRoyal 未配置</span>
                     </p>
                     <div class="table-scroll">
                         <table>
@@ -107,7 +123,7 @@
                                         />
                                     </th>
                                     <th>节点 / 地址</th>
-                                    <th>检测 / 出口 IP</th>
+                                    <th>检测 / 出口 IP / IPRoyal</th>
                                     <th>协议</th>
                                     <th>账号</th>
                                     <th>分组</th>
@@ -149,7 +165,7 @@
                 </div>
                 <p class="footnote">
                     检测结果反映服务器到 ISP
-                    的连通性，延迟包含完整请求耗时。检测失败不会自动停用，只有启用的节点会出现在订阅中。
+                    的连通性，延迟包含完整请求耗时。每次成功定位都会按国家覆盖原分组（含手动分组），分组订阅随之更新。定位失败保留原分组；检测失败不会自动停用。IPRoyal 订单到期只标记状态，不会自动停用节点。
                 </p>
             </section>
             <section id="shares-panel" aria-label="分享订阅" hidden>
@@ -196,7 +212,7 @@
                         <strong>整理节点</strong>
                         <p>
                             导入后自动探测连通性、认证和出口
-                            IP。可点击“检测”重新探测，也可勾选本页节点批量检测、启停、移动分组、删除或创建订阅。
+                            IP。点击“一键检测全部”可检测所有已导入节点（包含停用节点），不受筛选或分页影响。也可逐条检测，或勾选本页节点批量检测、启停、移动分组、删除或创建订阅。
                         </p>
                     </li>
                     <li>
@@ -216,6 +232,11 @@
                     </li>
                 </ol>
                 <h3>节点检测</h3>
+                <p>
+                    每次检测成功后，使用出口 IP
+                    查询大致国家、城市和运营商，并按国家自动创建或加入分组，覆盖原分组。单个检测、批量检测及导入自动检测均适用。定位查询通常额外需要数秒，批量时会限速；定位失败保留原分组，不影响连通性结果。IP
+                    定位不代表精确物理位置，也不能证明是否为真实家宽。
+                </p>
                 <p>
                     默认通过代理访问 api.ipify.org 获取出口 IP，同时检测 5
                     个节点，单次最多等待 10
@@ -268,12 +289,11 @@ USER:PASS@HOST:PORT</pre
             <form id="login-form">
                 <img src="./icon.svg" width="56" height="56" alt="" />
                 <h2 id="login-title">连接 ISP 管理</h2>
-                <p class="muted">输入服务器管理口令，开始管理你的代理。</p>
+                <p class="muted">如服务器启用了管理口令，请输入后开始管理你的代理。</p>
                 <label
                     >管理口令<input
                         id="admin-token"
                         type="password"
-                        required
                         minlength="24"
                         autocomplete="off"
                         placeholder="粘贴管理口令"
@@ -281,8 +301,8 @@ USER:PASS@HOST:PORT</pre
                 <p id="login-error" class="error" role="alert"></p>
                 <button class="primary full" type="submit">连接</button>
                 <p class="footnote">
-                    首次启动生成的口令保存在数据目录的 admin-token
-                    文件中。本次连接仅在当前标签页保留。
+                    未配置管理口令时可直接连接；配置后请输入服务器设置的口令。
+                    口令仅在当前标签页保留。
                 </p>
             </form>
         </dialog>
@@ -510,6 +530,21 @@ USER:PASS@HOST:PORT</pre
                 </div>
             </form>
         </dialog>
+        <dialog id="share-rename-dialog" aria-labelledby="share-rename-title">
+            <form id="share-rename-form">
+                <div class="dialog-heading">
+                    <h2 id="share-rename-title">重命名订阅</h2>
+                    <button type="button" class="icon-button" data-close="share-rename-dialog" aria-label="关闭重命名">×</button>
+                </div>
+                <label>订阅名称<input id="share-rename-name" required maxlength="200" /></label>
+                <p class="hint">分享链接保持不变。客户端首次导入时会读取此名称；已导入的名称可能需要在客户端中手动修改。</p>
+                <p id="share-rename-error" class="error" role="alert"></p>
+                <div class="dialog-footer">
+                    <button type="button" data-close="share-rename-dialog">取消</button>
+                    <button type="submit" class="primary">保存名称</button>
+                </div>
+            </form>
+        </dialog>
         <dialog id="batch-dialog" aria-labelledby="batch-title">
             <form id="batch-form">
                 <div class="dialog-heading">
@@ -561,6 +596,89 @@ USER:PASS@HOST:PORT</pre
             <p class="footnote">
                 订阅包含代理账号和密码，请仅分享给需要使用的人。
             </p>
+        </dialog>
+        <dialog
+            id="groups-dialog"
+            class="wide-dialog"
+            aria-labelledby="groups-title"
+        >
+            <div class="dialog-heading">
+                <h2 id="groups-title">管理分组</h2>
+                <button
+                    class="icon-button"
+                    type="button"
+                    data-close="groups-dialog"
+                    aria-label="关闭分组管理"
+                >
+                    ×
+                </button>
+            </div>
+            <p class="hint">
+                可先创建空分组，再导入或移动节点。重命名会同步更新节点和分组订阅，原链接继续可用。下次检测成功定位后，节点将按国家重新分组。
+            </p>
+            <fieldset id="groups-controls" class="groups-controls">
+                <legend class="sr-only">分组操作</legend>
+                <form id="group-create-form" class="group-create">
+                    <label
+                        >新分组名称<input
+                            id="group-new-name"
+                            maxlength="100"
+                            required
+                            placeholder="例如：香港家宽"
+                            autocomplete="off"
+                    /></label>
+                    <button type="submit" class="primary">新增分组</button>
+                </form>
+                <div id="groups-list"></div>
+            </fieldset>
+            <p id="groups-error" class="error" role="alert"></p>
+        </dialog>
+        <dialog id="group-delete-dialog" aria-labelledby="group-delete-title">
+            <form id="group-delete-form">
+                <div class="dialog-heading">
+                    <h2 id="group-delete-title">删除分组</h2>
+                    <button
+                        class="icon-button"
+                        type="button"
+                        data-close="group-delete-dialog"
+                        aria-label="关闭删除分组"
+                    >
+                        ×
+                    </button>
+                </div>
+                <p id="group-delete-description"></p>
+                <p class="hint">
+                    该分组的专属订阅链接将失效，已有下载配置不受影响。重新创建同名分组不会恢复旧链接。
+                </p>
+                <p id="group-delete-error" class="error" role="alert"></p>
+                <div class="dialog-footer">
+                    <button type="button" data-close="group-delete-dialog">
+                        取消
+                    </button>
+                    <button
+                        id="group-delete-confirm"
+                        type="submit"
+                        class="danger"
+                    >
+                        删除分组，保留节点
+                    </button>
+                </div>
+            </form>
+        </dialog>
+        <dialog id="iproyal-config-dialog" aria-labelledby="iproyal-config-title">
+            <form id="iproyal-config-form">
+                <div class="dialog-heading">
+                    <h2 id="iproyal-config-title">配置 IPRoyal API</h2>
+                    <button type="button" class="icon-button" data-close="iproyal-config-dialog" aria-label="关闭配置">×</button>
+                </div>
+                <p class="hint">填写 IPRoyal Reseller API Token，保存后立即同步订单状态。Token 保存在服务器上，重启后仍有效，页面不会回显。</p>
+                <label>API Token<input id="iproyal-api-token" type="password" required maxlength="4096" autocomplete="off" spellcheck="false" placeholder="粘贴 IPRoyal API Token" /></label>
+                <p id="iproyal-config-error" class="error" role="alert"></p>
+                <div class="dialog-footer">
+                    <button type="button" data-close="iproyal-config-dialog">取消</button>
+                    <button type="submit" class="primary">保存并同步</button>
+                </div>
+            </form>
         </dialog>
         <datalist id="group-options"></datalist>
     </body>

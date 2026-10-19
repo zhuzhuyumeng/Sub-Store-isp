@@ -12,6 +12,7 @@ import {
 } from 'node:fs';
 import { dirname } from 'node:path';
 import { IspError, parseImport, textField, validateNode } from './parser.mjs';
+import { countryName } from './geo.mjs';
 
 const identity = (n) =>
     JSON.stringify([n.protocol, n.server, n.port, n.username]);
@@ -20,6 +21,42 @@ const visible = ({ password, probeRevision, ...rest }) => ({
     hasPassword: true,
 });
 const now = () => new Date().toISOString();
+const iproyalStatuses = new Set([
+    'matched',
+    'unmatched',
+    'expired',
+    'error',
+    'not_configured',
+]);
+const defaultIprRoyalSync = () => ({
+    status: 'never',
+    syncedAt: null,
+    fetchedOrders: 0,
+    matched: 0,
+    unmatched: 0,
+    error: null,
+});
+function validateIprRoyal(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+        throw new Error('IPRoyal 元数据无效');
+    if (
+        value.orderId !== undefined &&
+        (!Number.isSafeInteger(value.orderId) || value.orderId < 1)
+    )
+        throw new Error('IPRoyal 订单号无效');
+    if (value.status !== undefined && typeof value.status !== 'string')
+        throw new Error('IPRoyal 订单状态无效');
+    for (const key of ['expiresAt', 'syncedAt'])
+        if (
+            value[key] !== undefined &&
+            value[key] !== null &&
+            !Number.isFinite(Date.parse(value[key]))
+        )
+            throw new Error(`IPRoyal ${key} 无效`);
+    if (value.syncStatus !== undefined && !iproyalStatuses.has(value.syncStatus))
+        throw new Error('IPRoyal 同步状态无效');
+    return true;
+}
 export function validIds(ids, nodes) {
     if (
         !Array.isArray(ids) ||
@@ -43,11 +80,22 @@ function validShape(state) {
     )
         return false;
     try {
+        if (state.groups !== undefined) {
+            if (
+                !Array.isArray(state.groups) ||
+                new Set(state.groups).size !== state.groups.length
+            )
+                return false;
+            for (const group of state.groups)
+                if (textField(group, '分组', 100).trim() !== group)
+                    return false;
+        }
         const ids = new Set(),
             identities = new Set();
         for (const node of state.nodes) {
             validateNode(node);
             textField(node.name, '名称');
+                if (node.iproyal !== undefined) validateIprRoyal(node.iproyal);
             if (
                 typeof node.id !== 'string' ||
                 ids.has(node.id) ||
@@ -87,6 +135,20 @@ function validShape(state) {
             tokens.add(s.token);
             shareIds.add(s.id);
         }
+        if (state.iproyalSync !== undefined) {
+            const sync = state.iproyalSync;
+            if (
+                !sync ||
+                !['never', 'ok', 'error', 'not_configured'].includes(sync.status) ||
+                (sync.syncedAt !== null &&
+                    !Number.isFinite(Date.parse(sync.syncedAt))) ||
+                !Number.isSafeInteger(sync.fetchedOrders) ||
+                !Number.isSafeInteger(sync.matched) ||
+                !Number.isSafeInteger(sync.unmatched) ||
+                (sync.error !== null && typeof sync.error !== 'string')
+            )
+                return false;
+        }
         return true;
     } catch {
         return false;
@@ -95,7 +157,7 @@ function validShape(state) {
 export class IspStore {
     constructor({ file }) {
         this.file = file;
-        this.state = { version: 1, nodes: [], shares: [] };
+        this.state = { version: 1, nodes: [], shares: [], groups: [] };
         if (existsSync(file)) {
             try {
                 this.state = JSON.parse(readFileSync(file, 'utf8'));
@@ -104,11 +166,39 @@ export class IspStore {
             }
             if (!validShape(this.state))
                 throw new Error('ISP 数据格式无效，请检查文件或恢复备份');
+            // Legacy stores only recorded group names on nodes and subscriptions.
+            this.state.groups = [
+                ...new Set(
+                    [
+                        ...(this.state.groups ??
+                            this.state.shares
+                                .filter((s) => s.scope === 'group')
+                                .map((s) => s.group)),
+                        ...this.state.nodes.map((n) => n.group),
+                    ].filter(Boolean),
+                ),
+            ];
         }
+        this.state.iproyalSync = {
+            ...defaultIprRoyalSync(),
+            ...(this.state.iproyalSync ?? {}),
+        };
     }
     transaction(mutator) {
         const next = structuredClone(this.state);
         const result = mutator(next);
+        // Preserve empty groups and register groups introduced by imports or edits.
+        next.groups = [
+            ...new Set(
+                [...next.groups, ...next.nodes.map((n) => n.group)].filter(
+                    Boolean,
+                ),
+            ),
+        ];
+        next.iproyalSync = {
+            ...defaultIprRoyalSync(),
+            ...(next.iproyalSync ?? {}),
+        };
         mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
         const temporary = `${this.file}.${randomUUID()}.tmp`;
         let fd;
@@ -234,7 +324,10 @@ export class IspStore {
             total: nodes.length,
             page,
             pageSize,
-            groups: [...new Set(this.state.nodes.map((n) => n.group))].sort(),
+            groups: [
+                ...this.state.groups,
+                ...(this.state.nodes.some((n) => !n.group) ? [''] : []),
+            ].sort(),
             stats: {
                 total: this.state.nodes.length,
                 enabled: this.state.nodes.filter((n) => n.enabled).length,
@@ -251,6 +344,141 @@ export class IspStore {
         const node = this.nodeIndex.get(id);
         if (!node) throw new IspError('节点不存在', 404);
         return structuredClone(node);
+    }
+    providerNodes() {
+        return this.state.nodes.map(({ id, protocol, server, port }) => ({
+            id,
+            protocol,
+            server,
+            port,
+        }));
+    }
+    iproyalSyncState() {
+        return structuredClone(this.state.iproyalSync ?? defaultIprRoyalSync());
+    }
+    saveIprRoyalSync(updates, summary = {}) {
+        if (!updates || typeof updates !== 'object' || Array.isArray(updates))
+            throw new IspError('IPRoyal 同步结果无效');
+        const ids = new Set(this.state.nodes.map((node) => node.id));
+        for (const [id, metadata] of Object.entries(updates)) {
+            if (!ids.has(id)) throw new IspError('IPRoyal 同步包含不存在的节点', 409);
+            validateIprRoyal(metadata);
+        }
+        const matched = Object.values(updates).filter(
+            (metadata) => metadata.syncStatus === 'matched' || metadata.syncStatus === 'expired',
+        ).length;
+        const unmatched = Object.values(updates).filter(
+            (metadata) => metadata.syncStatus === 'unmatched',
+        ).length;
+        const syncedAt = summary.syncedAt ?? now();
+        return this.transaction((state) => {
+            for (const node of state.nodes)
+                if (updates[node.id]) node.iproyal = structuredClone(updates[node.id]);
+            state.iproyalSync = {
+                ...defaultIprRoyalSync(),
+                status: 'ok',
+                syncedAt,
+                fetchedOrders: Number.isSafeInteger(summary.fetchedOrders)
+                    ? summary.fetchedOrders
+                    : 0,
+                matched,
+                unmatched,
+            };
+            return { matched, unmatched };
+        });
+    }
+    recordIprRoyalSyncFailure(message, syncedAt = now()) {
+        const safe = String(message).slice(0, 300);
+        return this.transaction((state) => {
+            state.iproyalSync = {
+                ...defaultIprRoyalSync(),
+                ...(state.iproyalSync ?? {}),
+                status: 'error',
+                syncedAt,
+                error: safe,
+            };
+            return structuredClone(state.iproyalSync);
+        });
+    }
+    listGroups() {
+        const groups = new Map(
+            this.state.groups.map((name) => [
+                name,
+                { name, nodeCount: 0, shareCount: 0 },
+            ]),
+        );
+        for (const node of this.state.nodes)
+            if (groups.has(node.group)) groups.get(node.group).nodeCount++;
+        for (const share of this.state.shares)
+            if (
+                share.scope === 'group' &&
+                groups.has(share.group) &&
+                share.enabled &&
+                (!share.expiresAt || Date.parse(share.expiresAt) > Date.now())
+            )
+                groups.get(share.group).shareCount++;
+        return [...groups.values()].sort((a, b) =>
+            a.name.localeCompare(b.name, 'zh-CN'),
+        );
+    }
+    createGroup(value) {
+        const name = textField(value, '分组', 100).trim();
+        if (this.state.groups.includes(name))
+            throw new IspError('分组已存在', 409);
+        return this.transaction((state) => {
+            state.groups.push(name);
+            return { name };
+        });
+    }
+    renameGroup(value, nextValue) {
+        const name = textField(value, '分组', 100).trim();
+        const nextName = textField(nextValue, '新分组名称', 100).trim();
+        if (!this.state.groups.includes(name))
+            throw new IspError('分组不存在', 404);
+        if (name !== nextName && this.state.groups.includes(nextName))
+            throw new IspError('分组已存在', 409);
+        return this.transaction((state) => {
+            state.groups = state.groups.map((group) =>
+                group === name ? nextName : group,
+            );
+            const timestamp = now();
+            for (const node of state.nodes)
+                if (node.group === name) {
+                    node.group = nextName;
+                    node.updatedAt = timestamp;
+                }
+            for (const share of state.shares)
+                if (share.scope === 'group' && share.group === name)
+                    share.group = nextName;
+            return { name: nextName };
+        });
+    }
+    deleteGroup(value) {
+        const name = textField(value, '分组', 100).trim();
+        if (!this.state.groups.includes(name))
+            throw new IspError('分组不存在', 404);
+        return this.transaction((state) => {
+            state.groups = state.groups.filter((group) => group !== name);
+            let moved = 0,
+                revoked = 0;
+            const timestamp = now();
+            for (const node of state.nodes)
+                if (node.group === name) {
+                    node.group = '';
+                    node.updatedAt = timestamp;
+                    moved++;
+                }
+            for (const share of state.shares)
+                if (
+                    share.scope === 'group' &&
+                    share.group === name &&
+                    share.enabled
+                ) {
+                    share.enabled = false;
+                    revoked++;
+                }
+            return { deleted: true, moved, revoked };
+        });
     }
     update(id, patch) {
         if (!patch || typeof patch !== 'object' || Array.isArray(patch))
@@ -310,8 +538,19 @@ export class IspStore {
         );
         if (!valid.size) return;
         this.transaction((state) => {
-            for (const node of state.nodes)
-                if (valid.has(node.id)) node.health = valid.get(node.id);
+            for (const node of state.nodes) {
+                if (!valid.has(node.id)) continue;
+                node.health = valid.get(node.id);
+                const country =
+                    node.health.status === 'online' &&
+                    node.health.location?.status === 'located'
+                        ? countryName(node.health.location.countryCode)
+                        : null;
+                if (country && node.group !== country) {
+                    node.group = country;
+                    node.updatedAt = now();
+                }
+            }
         });
     }
     batch({ ids, action, group }) {
@@ -343,10 +582,7 @@ export class IspStore {
             input.scope === 'group'
                 ? textField(input.group, '分组', 100).trim()
                 : '';
-        if (
-            input.scope === 'group' &&
-            !this.state.nodes.some((n) => n.group === group)
-        )
+        if (input.scope === 'group' && !this.state.groups.includes(group))
             throw new IspError('分组不存在');
         const ids =
             input.scope === 'selected'
@@ -380,6 +616,19 @@ export class IspStore {
     }
     listShares() {
         return structuredClone(this.state.shares).reverse();
+    }
+    renameShare(id, input) {
+        if (!input || typeof input !== 'object' || Array.isArray(input) ||
+            Object.keys(input).some((key) => key !== 'name'))
+            throw new IspError('仅支持修改订阅名称');
+        const name = textField(input.name, '订阅名称').trim();
+        if (!this.state.shares.some((share) => share.id === id))
+            throw new IspError('分享不存在', 404);
+        return this.transaction((state) => {
+            const share = state.shares.find((share) => share.id === id);
+            share.name = name;
+            return structuredClone(share);
+        });
     }
     revokeShare(id) {
         if (!this.state.shares.some((s) => s.id === id))

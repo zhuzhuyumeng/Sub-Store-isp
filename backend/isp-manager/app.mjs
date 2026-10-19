@@ -23,15 +23,23 @@ export function normalizePublicBase(value = '') {
         throw new Error('ISP_PUBLIC_BASE_URL 不允许凭据、查询或片段');
     return url.href.replace(/\/+$/, '');
 }
-export function createApp({ store, adminToken, publicBaseUrl = '', prober }) {
+export function createApp({
+    store,
+    adminToken = null,
+    publicBaseUrl = '',
+    prober,
+    iproyalSync,
+}) {
+    const authEnabled = adminToken !== null && adminToken !== undefined;
     if (
-        typeof adminToken !== 'string' ||
-        adminToken.length < 24 ||
-        /\s/.test(adminToken)
+        authEnabled &&
+        (typeof adminToken !== 'string' ||
+            adminToken.length < 24 ||
+            /\s/.test(adminToken))
     )
         throw new Error('管理口令至少需要 24 位且不包含空白');
     const base = normalizePublicBase(publicBaseUrl),
-        expected = digest(adminToken);
+        expected = authEnabled ? digest(adminToken) : null;
     const app = express();
     app.disable('x-powered-by');
     app.set('query parser', 'simple');
@@ -46,6 +54,7 @@ export function createApp({ store, adminToken, publicBaseUrl = '', prober }) {
         next();
     });
     app.use('/api/isp', (req, res, next) => {
+        if (!authEnabled) return next();
         const auth = req.get('authorization');
         if (
             !auth?.startsWith('Bearer ') ||
@@ -91,6 +100,23 @@ export function createApp({ store, adminToken, publicBaseUrl = '', prober }) {
         if (!prober) throw new IspError('检测服务未启用', 503);
         ok(res, prober.enqueue(req.body?.ids), 202);
     });
+    app.post('/api/isp/nodes/check-all', (req, res) => {
+        if (!prober) throw new IspError('检测服务未启用', 503);
+        ok(res, prober.enqueueAll(), 202);
+    });
+    app.get('/api/isp/iproyal/status', (req, res) =>
+        ok(res, iproyalSync?.status?.() ?? { status: 'not_configured' }),
+    );
+    app.put('/api/isp/iproyal/config', (req, res) => {
+        if (!iproyalSync?.configure) throw new IspError('此服务未启用页面配置', 503);
+        ok(res, iproyalSync.configure(req.body?.token));
+    });
+    app.post('/api/isp/iproyal/sync', async (req, res) => {
+        const result = iproyalSync
+            ? await iproyalSync.run()
+            : { status: 'not_configured' };
+        ok(res, result, result.status === 'error' ? 502 : 200);
+    });
     app.patch('/api/isp/nodes/:id', (req, res) =>
         ok(res, store.update(req.params.id, req.body)),
     );
@@ -99,6 +125,16 @@ export function createApp({ store, adminToken, publicBaseUrl = '', prober }) {
             throw new IspError('请提供批量操作内容');
         ok(res, store.batch(req.body));
     });
+    app.get('/api/isp/groups', (req, res) => ok(res, store.listGroups()));
+    app.post('/api/isp/groups', (req, res) =>
+        ok(res, store.createGroup(req.body?.name), 201),
+    );
+    app.patch('/api/isp/groups', (req, res) =>
+        ok(res, store.renameGroup(req.body?.name, req.body?.newName)),
+    );
+    app.delete('/api/isp/groups', (req, res) =>
+        ok(res, store.deleteGroup(req.body?.name)),
+    );
     app.get('/api/isp/shares', (req, res) =>
         ok(res, store.listShares().map(shareView)),
     );
@@ -116,14 +152,25 @@ export function createApp({ store, adminToken, publicBaseUrl = '', prober }) {
                 : store.revokeShare(req.params.id),
         );
     });
+    app.patch('/api/isp/shares/:id', (req, res) =>
+        ok(res, shareView(store.renameShare(req.params.id, req.body))),
+    );
     app.get('/s/:token/:file', (req, res) => {
         if (!['clash.yaml', 'provider.yaml'].includes(req.params.file))
             throw new IspError('订阅不存在', 404);
-        const { nodes } = store.resolveShare(req.params.token);
+        const { share, nodes } = store.resolveShare(req.params.token);
         const content = exportClash(nodes, req.params.file === 'provider.yaml');
+        const expiries = [share.expiresAt, ...nodes.map((node) => node.iproyal?.expiresAt)]
+            .map((value) => Date.parse(value))
+            .filter(Number.isFinite);
+        if (expiries.length) {
+            const earliest = expiries.reduce((a, b) => Math.min(a, b));
+            res.set('subscription-userinfo', `expire=${Math.floor(earliest / 1000)}`);
+        }
         res.set({
             'Content-Type': 'text/yaml; charset=utf-8',
-            'Content-Disposition': `inline; filename="${req.params.file}"`,
+            'Content-Disposition': `inline; filename=${req.params.file}; filename*=UTF-8''${encodeURIComponent(share.name.toWellFormed().replace(/[\\/]/g, '_')).replace(/['()*]/g, (char) => '%' + char.charCodeAt(0).toString(16).toUpperCase())}.yaml`,
+            'profile-title': `base64:${Buffer.from(share.name, 'utf8').toString('base64')}`,
             'profile-update-interval': '6',
         }).send(content);
     });

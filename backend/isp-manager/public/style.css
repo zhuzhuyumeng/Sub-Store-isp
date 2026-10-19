@@ -184,6 +184,77 @@ main {
     font-size: 12px;
     margin-top: 7px;
 }
+.node-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+}
+.node-actions button {
+    white-space: nowrap;
+}
+.groups-controls {
+    border: 0;
+    padding: 0;
+    margin: 0;
+    min-width: 0;
+}
+.group-create,
+.group-rename {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+}
+.group-create {
+    margin: 20px 0;
+}
+.group-create label {
+    flex: 1;
+    margin: 0;
+}
+.group-create button,
+.group-rename button {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+.group-row {
+    padding: 16px 0;
+    border-top: 1px solid var(--line);
+}
+.group-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 10px;
+    font-size: 12px;
+}
+.group-name {
+    overflow-wrap: anywhere;
+    font-size: 14px;
+}
+.group-rename input {
+    flex: 1;
+}
+@media (max-width: 700px) {
+    #nodes-panel > .section-heading {
+        flex-wrap: wrap;
+    }
+    .node-actions {
+        justify-content: flex-start;
+    }
+    .node-actions button,
+    .group-create button,
+    .group-rename button {
+        padding: 9px 10px;
+        font-size: 12px;
+    }
+    .group-rename {
+        flex-wrap: wrap;
+    }
+    .group-rename input {
+        flex-basis: 100%;
+    }
+}
 .count {
     display: inline-block;
     font-size: 12px;
@@ -880,6 +951,13 @@ dialog::backdrop {
     .login-dialog {
         padding: 30px 24px;
     }
+    .node-actions {
+        flex-wrap: wrap;
+    }
+    .iproyal-status {
+        display: block;
+        margin: 4px 0 0;
+    }
     .footnote {
         font-size: 10px;
     }
@@ -932,4 +1010,28 @@ dialog::backdrop {
 }
 .exit-ip {
     font-family: ui-monospace, monospace;
+}
+.iproyal-status {
+    display: inline-block;
+    margin-left: 10px;
+    color: #64748b;
+}
+.iproyal-detail {
+    font-weight: 550;
+}
+.iproyal-matched {
+    color: #3979e3;
+}
+.iproyal-expired {
+    color: #c34646;
+}
+.iproyal-unmatched,
+.iproyal-unknown {
+    color: #8a94a3;
+}
+.iproyal-error {
+    color: #b07721;
+}
+.iproyal-not_configured {
+    color: #8a94a3;
 }

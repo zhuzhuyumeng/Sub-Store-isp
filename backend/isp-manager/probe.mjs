@@ -138,6 +138,7 @@ export class ProbeQueue {
     constructor({
         store,
         probe = createProbe(),
+        locate,
         concurrency = 5,
         flushMs = 1000,
     }) {
@@ -149,6 +150,7 @@ export class ProbeQueue {
             throw new Error('ISP_PROBE_CONCURRENCY 必须为 1–20');
         this.store = store;
         this.probe = probe;
+        this.locate = locate;
         this.concurrency = concurrency;
         this.pending = new Map();
         this.running = new Set();
@@ -163,6 +165,13 @@ export class ProbeQueue {
     enqueue(ids) {
         if (this.closed) throw new IspError('检测服务正在停止', 503);
         const selected = validIds(ids, this.store.state.nodes);
+        return this.#enqueue(selected);
+    }
+    enqueueAll() {
+        return this.#enqueue(this.store.state.nodes.map((node) => node.id));
+    }
+    #enqueue(selected) {
+        if (this.closed) throw new IspError('检测服务正在停止', 503);
         let queued = 0;
         for (const id of selected) {
             const node = this.store.get(id),
@@ -232,6 +241,23 @@ export class ProbeQueue {
             result = await this.probe(node, { signal: this.controller.signal });
         } catch {
             result = failed('unreachable');
+        }
+        if (
+            !this.closed &&
+            this.locate &&
+            result.status === 'online' &&
+            result.exitIp
+        ) {
+            try {
+                result = {
+                    ...result,
+                    location: await this.locate(result.exitIp, {
+                        signal: this.controller.signal,
+                    }),
+                };
+            } catch {
+                result = { ...result, location: { status: 'unavailable' } };
+            }
         }
         if (!this.closed) {
             try {

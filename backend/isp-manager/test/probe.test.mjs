@@ -102,6 +102,22 @@ async function eventually(fn) {
     }
     assert.fail('condition did not become true');
 }
+test('check-all includes more than the explicit ID limit and rejects work after shutdown', async (t) => {
+    const { ProbeQueue } = await probeModule();
+    const store = storeFixture(t);
+    // A store can grow beyond one import or explicit-ID batch.
+    store.import(input(50000));
+    store.import({ ...input(), content: 'last.example:80:u:p' });
+    const queue = new ProbeQueue({ store, probe: async () => success() });
+    try {
+        assert.equal(queue.enqueueAll().queued, 50001);
+        assert.equal(queue.summary().queued, 50001);
+        assert.equal(queue.view(store.state.nodes[50000]), 'queued');
+    } finally {
+        await queue.close();
+    }
+    assert.throws(() => queue.enqueueAll(), /检测服务正在停止/);
+});
 test('HTTP CONNECT checks exit IP with literal proxy credentials kept out of checker request', async (t) => {
     const { createProbe } = await probeModule();
     const fixture = await proxyFixture(t);

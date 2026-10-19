@@ -2,6 +2,7 @@
 const $ = (id) => document.getElementById(id);
 const state = {
     token: sessionStorage.getItem('isp-admin') || '',
+    connected: false,
     tab: 'nodes',
     page: 1,
     pageSize: 50,
@@ -16,6 +17,8 @@ const state = {
     batch: null,
     requestVersion: 0,
     session: 0,
+    checkAllPending: false,
+    probesRemaining: 0,
 };
 const apiBase = new URL('./api/isp/', location.href);
 let toastTimer, searchTimer, probeTimer;
@@ -42,6 +45,7 @@ function close(id) {
 }
 function loggedOut() {
     state.token = '';
+    state.connected = false;
     state.session++;
     state.requestVersion++;
     sessionStorage.removeItem('isp-admin');
@@ -50,6 +54,8 @@ function loggedOut() {
     state.groups = [];
     state.selected.clear();
     state.preview = '';
+    state.checkAllPending = false;
+    state.probesRemaining = 0;
     clearTimeout(searchTimer);
     clearTimeout(probeTimer);
     $('nodes-body').replaceChildren();
@@ -72,14 +78,13 @@ class CancelledRequest extends Error {}
 async function api(path, body, method = 'GET') {
     const session = state.session;
     const token = state.token;
+    const headers = {
+        ...(state.token ? { Authorization: `Bearer ${state.token}` } : {}),
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+    };
     const response = await fetch(new URL(path, apiBase), {
         method,
-        headers: {
-            Authorization: `Bearer ${state.token}`,
-            ...(body !== undefined
-                ? { 'Content-Type': 'application/json' }
-                : {}),
-        },
+        headers,
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     if (session !== state.session || token !== state.token)
@@ -92,7 +97,7 @@ async function api(path, body, method = 'GET') {
     if (session !== state.session || token !== state.token)
         throw new CancelledRequest();
     if (!response.ok)
-        throw new Error(payload.error?.message || '请求失败，请稍后重试');
+        throw new Error(payload.error?.message || payload.data?.error || '请求失败，请稍后重试');
     return payload.data;
 }
 async function run(task, errorId, button) {
@@ -115,15 +120,19 @@ function option(value, text) {
 }
 function updateGroups() {
     const selected = $('group-filter').value;
+    const shareGroup = $('share-group').value;
     $('group-filter').replaceChildren(
         option('*', '全部分组'),
         ...state.groups.map((g) => option(g ? `g:${g}` : 'g:', g || '未分组')),
     );
+    if (selected === 'g:' && !state.groups.includes(''))
+        $('group-filter').append(option('g:', '未分组'));
     if ([...$('group-filter').options].some((o) => o.value === selected))
         $('group-filter').value = selected;
     $('share-group').replaceChildren(
         ...state.groups.filter(Boolean).map((g) => option(g, g)),
     );
+    if (state.groups.includes(shareGroup)) $('share-group').value = shareGroup;
     $('group-options').replaceChildren(
         ...state.groups.filter(Boolean).map((g) => option(g, g)),
     );
@@ -158,6 +167,57 @@ async function loadNodes() {
     renderNodes();
     showProbeProgress(data.probes);
 }
+function formatIproyalExpiry(metadata) {
+    if (!metadata) return 'IPRoyal 未同步';
+    if (metadata.syncStatus === 'unmatched') return 'IPRoyal 未匹配';
+    if (metadata.syncStatus === 'error') return 'IPRoyal 同步失败';
+    if (metadata.syncStatus === 'not_configured') return 'IPRoyal 未配置';
+    if (!metadata.expiresAt) return `IPRoyal · ${metadata.status || '已匹配'}`;
+    const date = new Date(metadata.expiresAt);
+    const remaining = date.getTime() - Date.now();
+    if (metadata.syncStatus === 'expired' || remaining <= 0)
+        return `IPRoyal 已过期 · ${date.toLocaleDateString('zh-CN')}`;
+    const days = Math.ceil(remaining / 86400000);
+    return `IPRoyal · ${days} 天后到期`;
+}
+function renderIprRoyal(cell, node) {
+    const status = node.iproyal?.syncStatus || 'unknown';
+    const detail = element(
+        'span',
+        `probe-detail iproyal-detail iproyal-${status}`,
+        formatIproyalExpiry(node.iproyal),
+    );
+    if (node.iproyal?.expiresAt)
+        detail.title = `订单 ${node.iproyal.orderId || '未知'} · 到期：${new Date(
+            node.iproyal.expiresAt,
+        ).toLocaleString('zh-CN')}`;
+    cell.append(detail);
+}
+async function loadIprRoyalStatus() {
+    const status = await api('iproyal/status');
+    const labels = {
+        ok: status.syncedAt
+            ? `IPRoyal 已同步 · ${new Date(status.syncedAt).toLocaleString('zh-CN')}`
+            : 'IPRoyal 已同步',
+        error: `IPRoyal 同步失败${status.error ? ` · ${status.error}` : ''}`,
+        not_configured: 'IPRoyal 未配置',
+        never: 'IPRoyal 尚未同步',
+    };
+    $('iproyal-status').textContent = labels[status.status] || 'IPRoyal 状态未知';
+}
+function iproyalConfigDialog() {
+    $('iproyal-config-form').reset();
+    $('iproyal-config-error').textContent = '';
+    open('iproyal-config-dialog');
+}
+async function syncIprRoyal() {
+    const result = await api('iproyal/sync', undefined, 'POST');
+    await loadIprRoyalStatus();
+    await loadNodes();
+    if (result.status === 'not_configured') iproyalConfigDialog();
+    else if (result.status === 'error') toast(result.error || 'IPRoyal 同步失败', true);
+    else toast(`IPRoyal 已同步：匹配 ${result.matched} 个节点`);
+}
 const healthLabels = {
     online: '可用',
     auth_failed: '认证失败',
@@ -185,6 +245,28 @@ function renderHealth(cell, node) {
             );
         if (result.exitIp)
             cell.append(element('span', 'probe-detail exit-ip', result.exitIp));
+        const location = result.location;
+        if (location?.status === 'located') {
+            const detail = element(
+                'span',
+                'probe-detail',
+                [location.country, location.city].filter(Boolean).join(' · '),
+            );
+            detail.title = `IP 归属地（大致位置）${
+                location.isp ? ` · ${location.isp}` : ''
+            }${location.asn ? ` · AS${location.asn}` : ''}`;
+            cell.append(detail);
+        } else if (location) {
+            const message =
+                {
+                    timeout: '定位超时',
+                    rate_limited: '定位服务限流',
+                    unavailable: '定位暂不可用',
+                }[location.status] || '定位暂不可用';
+            cell.append(
+                element('span', 'probe-detail', `${message} · 保留原分组`),
+            );
+        }
         const auth = {
             accepted: '代理接受连接凭据',
             rejected: '代理拒绝认证',
@@ -197,17 +279,20 @@ function renderHealth(cell, node) {
         cell.title = node.probeState
             ? '检测完成后自动更新'
             : '点击检测以获取连通性和出口 IP';
+    renderIprRoyal(cell, node);
 }
 function showProbeProgress(probes) {
     clearTimeout(probeTimer);
     const remaining = (probes?.queued || 0) + (probes?.checking || 0);
+    state.probesRemaining = remaining;
+    updateCheckAllButton();
     $('probe-progress').textContent = probes?.storageError
         ? '检测结果暂未保存，将自动重试。请检查数据目录权限。'
         : remaining
         ? `正在检测 ${probes.checking} 个 · 排队 ${probes.queued} 个`
-        : '导入后自动检测 · 可手动重新检测';
+        : '检测成功后按国家覆盖分组 · 定位失败保留原分组';
     if (
-        state.token &&
+        state.connected &&
         state.tab === 'nodes' &&
         (remaining || probes?.storageError)
     ) {
@@ -215,7 +300,7 @@ function showProbeProgress(probes) {
     }
 }
 async function pollProbes() {
-    if (!state.token || state.tab !== 'nodes') return;
+    if (!state.connected || state.tab !== 'nodes') return;
     const version = state.requestVersion;
     const query = new URLSearchParams({
         page: state.page,
@@ -232,7 +317,7 @@ async function pollProbes() {
     } catch (error) {
         if (
             !(error instanceof CancelledRequest) &&
-            state.token &&
+            state.connected &&
             state.tab === 'nodes'
         ) {
             $('probe-progress').textContent = '检测状态刷新失败，正在重试…';
@@ -241,19 +326,93 @@ async function pollProbes() {
         return;
     }
     if (version !== state.requestVersion || state.tab !== 'nodes') return;
-    // Update only health cells: keep selection, keyboard focus and open forms intact.
+    const maxPage = Math.max(1, Math.ceil(data.total / state.pageSize));
+    if (state.page > maxPage) {
+        state.page = maxPage;
+        return pollProbes();
+    }
+    const changedRows =
+        state.nodes.length !== data.items.length ||
+        state.nodes.some((node, i) => node.id !== data.items[i].id);
+    const changedGroups =
+        JSON.stringify(state.groups) !== JSON.stringify(data.groups);
+    Object.assign(state, {
+        groups: data.groups,
+        total: data.total,
+        stats: data.stats,
+    });
+    if (changedGroups) updateGroups();
+    if (changedRows) {
+        // A country change can move nodes out of the current filter/page.
+        const visible = new Set(data.items.map((node) => node.id));
+        state.selected = new Set(
+            [...state.selected].filter((id) => visible.has(id)),
+        );
+        state.nodes = data.items;
+        renderNodes();
+        showProbeProgress(data.probes);
+        return;
+    }
+    // Keep existing rows, selection, keyboard focus and open forms intact.
     const updates = new Map(data.items.map((node) => [node.id, node]));
     for (const node of state.nodes) {
         const fresh = updates.get(node.id);
         if (!fresh) continue;
         node.health = fresh.health;
         node.probeState = fresh.probeState;
+        node.group = fresh.group;
         const cell = document.querySelector(`[data-health-id="${node.id}"]`);
         if (cell) renderHealth(cell, node);
+        const group = document.querySelector(`[data-group-id="${node.id}"]`);
+        if (group) group.textContent = node.group || '未分组';
         const button = document.querySelector(`[data-probe-id="${node.id}"]`);
         if (button) button.disabled = Boolean(node.probeState);
     }
+    updateNodeSummary();
     showProbeProgress(data.probes);
+}
+function updateCheckAllButton() {
+    const button = $('check-all');
+    button.disabled =
+        state.checkAllPending ||
+        state.probesRemaining > 0 ||
+        !state.stats.total;
+    button.textContent = state.checkAllPending
+        ? '正在提交…'
+        : state.probesRemaining > 0
+        ? '检测中…'
+        : '一键检测全部';
+}
+async function checkAllNodes() {
+    if (
+        state.checkAllPending ||
+        state.probesRemaining > 0 ||
+        !state.stats.total
+    )
+        return;
+    const session = state.session;
+    state.checkAllPending = true;
+    updateCheckAllButton();
+    try {
+        const result = await api('nodes/check-all', undefined, 'POST');
+        // Keep accepted work busy even if the first status refresh fails.
+        state.probesRemaining = Math.max(
+            state.probesRemaining,
+            result.queued + result.checking,
+        );
+        await pollProbes();
+        if (session !== state.session) return;
+        toast(
+            result.queued
+                ? `已加入检测队列：${result.queued} 个节点（全部已导入节点）`
+                : '没有需要新加入检测队列的节点',
+        );
+    } finally {
+        if (session === state.session) {
+            state.checkAllPending = false;
+            updateCheckAllButton();
+        }
+    }
 }
 async function checkNodes(ids) {
     const result = await api('nodes/check', { ids }, 'POST');
@@ -264,7 +423,7 @@ async function checkNodes(ids) {
             : '所选节点已在检测队列中',
     );
 }
-function renderNodes() {
+function updateNodeSummary() {
     $('node-count').textContent = state.stats.total.toLocaleString();
     $(
         'stats',
@@ -273,6 +432,16 @@ function renderNodes() {
     ).toLocaleString()} 个已停用 · ${
         state.groups.filter(Boolean).length
     } 个分组`;
+    $('empty-nodes').hidden = state.stats.total !== 0;
+    $('empty-filter').hidden = state.total !== 0 || state.stats.total === 0;
+    const pages = Math.max(1, Math.ceil(state.total / state.pageSize));
+    $('page-number').textContent = `${state.page} / ${pages}`;
+    $('page-summary').textContent = `共 ${state.total.toLocaleString()} 个节点`;
+    $('previous').disabled = state.page <= 1;
+    $('next').disabled = state.page >= pages;
+    updateSelection();
+}
+function renderNodes() {
     $('nodes-body').replaceChildren(
         ...state.nodes.map((node) => {
             const row = element('tr');
@@ -308,6 +477,7 @@ function renderNodes() {
             );
             account.title = node.username;
             const group = element('td', 'group-pill', node.group || '未分组');
+            group.dataset.groupId = node.id;
             const status = element('td');
             status.append(
                 element(
@@ -362,14 +532,7 @@ function renderNodes() {
             return row;
         }),
     );
-    $('empty-nodes').hidden = state.stats.total !== 0;
-    $('empty-filter').hidden = state.total !== 0 || state.stats.total === 0;
-    const pages = Math.max(1, Math.ceil(state.total / state.pageSize));
-    $('page-number').textContent = `${state.page} / ${pages}`;
-    $('page-summary').textContent = `共 ${state.total.toLocaleString()} 个节点`;
-    $('previous').disabled = state.page <= 1;
-    $('next').disabled = state.page >= pages;
-    updateSelection();
+    updateNodeSummary();
 }
 function updateSelection() {
     const count = state.selected.size;
@@ -431,7 +594,14 @@ async function loadShares() {
                 links = element('button', '', '查看 / 复制链接');
             links.disabled = !active;
             links.addEventListener('click', () => showLinks(share));
-            actions.append(links);
+            const rename = element('button', 'quiet', '重命名');
+            rename.addEventListener('click', () => {
+                $('share-rename-form').dataset.shareId = share.id;
+                $('share-rename-name').value = share.name;
+                $('share-rename-error').textContent = '';
+                open('share-rename-dialog');
+            });
+            actions.append(links, rename);
             if (share.enabled) {
                 const revoke = element('button', 'quiet danger-text', '撤销');
                 revoke.addEventListener('click', () =>
@@ -450,7 +620,7 @@ async function loadShares() {
     );
 }
 function setTab(tab) {
-    if (!state.token) return open('login-dialog');
+    if (!state.connected) return open('login-dialog');
     state.tab = tab;
     clearTimeout(probeTimer);
     for (const t of ['nodes', 'shares', 'help'])
@@ -511,7 +681,7 @@ function invalidatePreview() {
         examples[$('import-format').selectedIndex];
 }
 function importDialog() {
-    if (!state.token) return open('login-dialog');
+    if (!state.connected) return open('login-dialog');
     invalidatePreview();
     $('import-error').textContent = '';
     open('import-dialog');
@@ -693,21 +863,51 @@ $('login-form').addEventListener('submit', (event) => {
         async () => {
             state.token = $('admin-token').value.trim();
             await loadNodes();
-            if (!state.token) return;
-            sessionStorage.setItem('isp-admin', state.token);
+            state.connected = true;
+            if (state.token) sessionStorage.setItem('isp-admin', state.token);
+            else sessionStorage.removeItem('isp-admin');
             $('admin-token').value = '';
             close('login-dialog');
             $('workspace').hidden = false;
-            $('logout').hidden = false;
+            $('logout').hidden = !state.token;
             $('connection').textContent = '已连接';
             $('connection').classList.add('online');
             setTab(state.tab);
+            await loadIprRoyalStatus().catch(() => {});
         },
         'login-error',
         button,
     );
 });
 $('logout').addEventListener('click', loggedOut);
+$('share-rename-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    run(async () => {
+        const id = $('share-rename-form').dataset.shareId;
+        await api(`shares/${id}`, { name: $('share-rename-name').value.trim() }, 'PATCH');
+        close('share-rename-dialog');
+        await loadShares();
+        toast('订阅名称已更新');
+    }, 'share-rename-error', event.submitter);
+});
+$('iproyal-config-open').addEventListener('click', iproyalConfigDialog);
+$('iproyal-config-dialog').addEventListener('close', () => {
+    $('iproyal-config-form').reset();
+});
+$('iproyal-config-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    run(async () => {
+        await api('iproyal/config', { token: $('iproyal-api-token').value.trim() }, 'PUT');
+        $('iproyal-api-token').value = '';
+        close('iproyal-config-dialog');
+        toast('API Token 已保存，正在同步…');
+        await run(syncIprRoyal, null, $('iproyal-sync'));
+        await loadIprRoyalStatus().catch(() => {});
+    }, 'iproyal-config-error', event.submitter);
+});
+$('iproyal-sync').addEventListener('click', () =>
+    run(() => syncIprRoyal(), null, $('iproyal-sync')),
+);
 for (const button of document.querySelectorAll('[data-close]'))
     button.addEventListener('click', () => close(button.dataset.close));
 for (const button of document.querySelectorAll('[data-tab]'))
@@ -715,7 +915,7 @@ for (const button of document.querySelectorAll('[data-tab]'))
 for (const id of ['import-open', 'top-import', 'empty-import'])
     $(id).addEventListener('click', importDialog);
 $('refresh').addEventListener('click', () => {
-    if (!state.token) return open('login-dialog');
+    if (!state.connected) return open('login-dialog');
     run(async () => {
         await loadNodes();
         if (state.tab === 'shares') await loadShares();
@@ -767,6 +967,7 @@ for (const action of ['enable', 'disable', 'group', 'delete'])
 $('bulk-check').addEventListener('click', () =>
     run(() => checkNodes([...state.selected]), null, $('bulk-check')),
 );
+$('check-all').addEventListener('click', () => run(checkAllNodes));
 $('bulk-share').addEventListener('click', () => shareDialog(true));
 for (const id of ['share-open', 'empty-share'])
     $(id).addEventListener('click', () => shareDialog());
@@ -920,13 +1121,15 @@ $('batch-form').addEventListener('submit', (event) => {
 $('copy-clash').addEventListener('click', () => copyLink('clash-link'));
 $('copy-provider').addEventListener('click', () => copyLink('provider-link'));
 run(async () => {
-    if (!state.token) return open('login-dialog');
     try {
         await loadNodes();
+        state.connected = true;
         $('workspace').hidden = false;
-        $('logout').hidden = false;
+        $('logout').hidden = !state.token;
         $('connection').textContent = '已连接';
         $('connection').classList.add('online');
+        await loadIprRoyalStatus().catch(() => {});
+        setTab(state.tab);
     } catch (error) {
         loggedOut();
         $('login-error').textContent = error.message;

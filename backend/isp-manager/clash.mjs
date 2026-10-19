@@ -12,12 +12,33 @@ export function exportClash(nodes, provider = false) {
         'PASS',
         'COMPATIBLE',
     ]);
-    const proxies = nodes.map((node) => {
-        const base = node.name;
-        let name = base,
-            suffix = 2;
+    const uniqueName = (base) => {
+        let name = base, suffix = 2;
         while (used.has(name)) name = `${base} (${suffix++})`;
         used.add(name);
+        return name;
+    };
+    const regions = nodes.map((node) => {
+        const location = node.health?.location;
+        return location?.status === 'located' && location.country
+            ? location.country : '位置未知';
+    });
+    const groups = new Map();
+    if (!provider) {
+        for (const region of regions) {
+            if (!groups.has(region))
+                groups.set(region, { name: uniqueName(region), type: 'select', proxies: [] });
+        }
+    }
+    const proxies = nodes.map((node, index) => {
+        const location = node.health?.location;
+        const place = location?.status === 'located'
+            ? [...new Set([location.country, location.city].filter(Boolean))].join(' · ')
+            : '';
+        const host = node.server.includes(':') ? `[${node.server}]` : node.server;
+        const base = `${place || '位置未知'}｜${host}:${node.port}`;
+        const name = uniqueName(base);
+        if (!provider) groups.get(regions[index]).proxies.push(name);
         return {
             name,
             type: node.protocol === 'socks5' ? 'socks5' : 'http',
@@ -41,8 +62,9 @@ export function exportClash(nodes, provider = false) {
                       {
                           name: 'ISP',
                           type: 'select',
-                          proxies: proxies.map((p) => p.name),
+                          proxies: [...groups.values()].map((group) => group.name),
                       },
+                      ...groups.values(),
                   ],
                   rules: ['MATCH,ISP'],
               },
